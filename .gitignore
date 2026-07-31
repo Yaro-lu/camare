@@ -1,0 +1,40 @@
+# Runtime configuration and secrets
+**/.env
+**/.env.*
+!**/.env.example
+**/secrets/*
+!**/secrets/.gitkeep
+**/data/
+**/*.log
+**/*.bak
+**/*.backup
+
+# Frigate runtime state
+frigate-1panel/config/frigate.db*
+frigate-1panel/config/model_cache/
+frigate-1panel/config/.storage/
+frigate-1panel/config/*.json
+
+# Current-server-only helpers (kept locally, not part of the public template)
+frigate-1panel/install-root.sh
+frigate-1panel/systemd/
+
+# Local research, screenshots, temporary upstream source and deployment artifacts
+.tmp-frigate-v0.17.2/
+work/
+docs/plans/
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Local handoff reports contain environment-specific addresses and history
+/局域网直连部署与回家测试说明.md
+/摄像头双画面断流修复-回家交接说明.md
+/摄像头本地录像与远程回放方案评估报告.md
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

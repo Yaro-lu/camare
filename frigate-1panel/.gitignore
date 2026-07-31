@@ -1,0 +1,8 @@
+.env
+secrets/*
+!secrets/.gitkeep
+config/frigate.db*
+config/model_cache/
+config/.storage/
+*.log
+*.bak

@@ -1,0 +1,69 @@
+name: camera-portal-lan
+
+services:
+  lan-caddy:
+    build:
+      context: ./caddy
+      dockerfile: Dockerfile
+      network: host
+      args:
+        CADDY_VERSION: "2.11.4"
+    image: local/camera-portal-lan-caddy:2.11.4
+    container_name: camera-portal-lan-caddy
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 64m
+    cpus: 0.15
+    stop_grace_period: 10s
+    tmpfs:
+      - /tmp:size=8m,mode=1777,noexec,nosuid,nodev
+    ports:
+      # Safety invariant: LAN IPv4 only. Never shorten this to "8088:8080".
+      - "${LAN_BIND_IP:?set LAN_BIND_IP in .env}:${LAN_PORT:-8088}:8080/tcp"
+    environment:
+      LAN_ACCESS_KEY: "${LAN_ACCESS_KEY:?set LAN_ACCESS_KEY in .env}"
+      LAN_HOSTPORT: "${LAN_BIND_IP:?set LAN_BIND_IP in .env}:${LAN_PORT:-8088}"
+      XDG_CONFIG_HOME: /tmp/config
+      XDG_DATA_HOME: /tmp/data
+    volumes:
+      - ./caddy:/etc/caddy:ro
+    networks:
+      lan_ingress:
+        gw_priority: 1
+      portal_ingress:
+        gw_priority: 0
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - --show-error
+        - --max-time
+        - "5"
+        - --header
+        - "Host: ${LAN_BIND_IP:?set LAN_BIND_IP in .env}:${LAN_PORT:-8088}"
+        - http://127.0.0.1:8080/healthz
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  lan_ingress:
+    driver: bridge
+  portal_ingress:
+    external: true
+    name: "${PORTAL_INGRESS_NETWORK:-camera_portal_tunnel}"

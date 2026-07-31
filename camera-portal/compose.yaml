@@ -1,0 +1,71 @@
+name: camera-portal
+
+services:
+  camera-portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Build-only host networking follows the server's existing Mihomo route.
+      # The running container still uses only the isolated Frigate network below.
+      network: host
+    image: local/camera-portal:1.0.0
+    container_name: camera-portal
+    restart: unless-stopped
+    user: "65532:65532"
+    read_only: true
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.35
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    ports:
+      - "127.0.0.1:${PUBLIC_LOOPBACK_PORT:-9080}:8080"
+      - "127.0.0.1:${ADMIN_LOOPBACK_PORT:-9081}:8081"
+    volumes:
+      - ./data:/data
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      PUBLIC_ADDR: ":8080"
+      ADMIN_ADDR: ":8081"
+      STATE_PATH: /data/state.json
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env}"
+      LOCAL_BASE_URL: "${LOCAL_BASE_URL:?set LOCAL_BASE_URL in .env}"
+      LOCAL_ACCESS_KEY: "${LAN_ACCESS_KEY:?set LAN_ACCESS_KEY in .env}"
+      ADMIN_ORIGIN: "${ADMIN_ORIGIN:?set ADMIN_ORIGIN in .env}"
+      ADMIN_TAILSCALE_LOGIN: "${ADMIN_TAILSCALE_LOGIN:?set ADMIN_TAILSCALE_LOGIN in .env}"
+      FRIGATE_URL: "http://frigate:5000"
+      GO2RTC_URL: "http://frigate:1984"
+      RECORDING_TIMEZONE: "${RECORDING_TIMEZONE:-Asia/Shanghai}"
+      CAMERAS: "${CAMERAS:-ptz_view=云台画面,fixed_view=枪机画面}"
+      MAX_LIVE_STREAMS: "8"
+      MAX_DEVICE_LIVE_STREAMS: "2"
+      LIVE_LEASE: "15m"
+      MAX_REPLAY_REQUESTS: "16"
+      MAX_DEVICE_REPLAY_REQUESTS: "4"
+    networks:
+      - frigate_backend
+      - public_tunnel
+    healthcheck:
+      test: ["CMD", "/camera-portal", "-healthcheck", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  frigate_backend:
+    external: true
+    name: "${FRIGATE_DOCKER_NETWORK:-frigate_default}"
+  public_tunnel:
+    external: true
+    name: "${PORTAL_INGRESS_NETWORK:-camera_portal_tunnel}"

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f3f4ef">
+  <title>观看设备管理</title>
+  <link rel="icon" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/admin.css?v=20260730-2">
+  <script src="/assets/admin.js?v=20260730-3" defer></script>
+</head>
+<body>
+  <main class="admin-shell">
+    <header class="admin-head">
+      <div class="admin-title">
+        <img src="/assets/mark.svg" alt="">
+        <div>
+          <p>TAILNET · CAMERA</p>
+          <h1>观看设备</h1>
+        </div>
+      </div>
+      <button id="openPairing" class="create-button" type="button">生成绑定二维码</button>
+    </header>
+
+    <section class="summary" aria-label="设备概况">
+      <div><b id="activeCount">—</b><span>未撤销设备</span></div>
+      <div><b id="revokedCount">—</b><span>已撤销</span></div>
+      <div><b id="pendingCount">—</b><span>待绑定二维码</span></div>
+    </section>
+
+    <section class="device-section">
+      <div class="section-head">
+        <h2>未撤销设备</h2>
+        <button id="refresh" class="text-button" type="button">刷新</button>
+      </div>
+      <div id="deviceList" class="device-list" aria-live="polite">
+        <p class="empty">正在读取设备…</p>
+      </div>
+    </section>
+
+    <section class="history-section">
+      <details id="historyPanel" class="history-panel">
+        <summary>
+          <span class="history-title">历史记录 <small>已撤销设备</small></span>
+          <span class="history-summary-meta">
+            <span id="historyCount">—</span>
+            <span class="history-chevron" aria-hidden="true">⌄</span>
+          </span>
+        </summary>
+        <div id="historyList" class="device-list history-list" aria-live="polite">
+          <p class="empty">正在读取历史记录…</p>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <dialog id="pairDialog">
+    <form id="pairForm" method="dialog">
+      <button class="dialog-close" value="cancel" aria-label="关闭">×</button>
+      <p class="dialog-kicker">一次性绑定</p>
+      <h2>生成一个设备二维码</h2>
+      <label>
+        <span>设备备注（可选）</span>
+        <input id="pairLabel" maxlength="80" placeholder="例如：张先生的 iPhone">
+      </label>
+      <label>
+        <span>有效时间</span>
+        <select id="pairExpiry">
+          <option value="1">1 小时</option>
+          <option value="24" selected>24 小时</option>
+          <option value="72">3 天</option>
+          <option value="168">7 天</option>
+        </select>
+      </label>
+      <button id="generatePairing" class="primary" type="submit">生成二维码</button>
+    </form>
+    <section id="qrResult" class="qr-result" hidden>
+      <button id="qrClose" class="dialog-close" type="button" aria-label="关闭">×</button>
+      <p class="dialog-kicker">等待设备扫描</p>
+      <h2>用客户设备扫描</h2>
+      <img id="qrImage" alt="设备绑定二维码">
+      <p>请在默认浏览器中打开；每个二维码只能绑定一个浏览器。</p>
+      <button id="copyPairURL" class="secondary" type="button">复制绑定链接</button>
+    </section>
+  </dialog>
+
+  <div id="adminToast" class="admin-toast" role="status" aria-live="polite"></div>
+</body>
+</html>

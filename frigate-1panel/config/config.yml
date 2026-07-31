@@ -1,0 +1,79 @@
+mqtt:
+  enabled: false
+
+tls:
+  enabled: true
+
+auth:
+  enabled: true
+  failed_login_rate_limit: "1/second;5/minute;20/hour"
+  session_length: 604800
+
+ffmpeg:
+  path: "7.0"
+  hwaccel_args: preset-vaapi
+  output_args:
+    record: preset-record-generic-audio-aac
+  retry_interval: 10
+
+go2rtc:
+  streams:
+    ptz_view:
+      - "rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@{FRIGATE_CAMERA_HOST}:{FRIGATE_RTSP_PORT}{FRIGATE_PTZ_PATH}"
+    fixed_view:
+      - "rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@{FRIGATE_CAMERA_HOST}:{FRIGATE_RTSP_PORT}{FRIGATE_FIXED_PATH}"
+
+birdseye:
+  enabled: false
+
+detect:
+  enabled: false
+
+motion:
+  enabled: false
+
+audio:
+  enabled: false
+
+record:
+  enabled: true
+  continuous:
+    days: 0.125
+  motion:
+    days: 0
+  alerts:
+    retain:
+      days: 0
+  detections:
+    retain:
+      days: 0
+
+snapshots:
+  enabled: false
+
+cameras:
+  ptz_view:
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/ptz_view
+          input_args: preset-rtsp-restream
+          roles:
+            - record
+            - detect
+    live:
+      streams:
+        高清直播: ptz_view
+
+  fixed_view:
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/fixed_view
+          input_args: preset-rtsp-restream
+          roles:
+            - record
+            - detect
+    live:
+      streams:
+        高清直播: fixed_view
+
+version: 0.17-0

@@ -1,0 +1,53 @@
+name: frigate
+
+services:
+  frigate:
+    container_name: frigate
+    image: ghcr.io/blakeblackshear/frigate:0.17.2@sha256:d4351369984d4a9e2a49ac59736f6490856a7ea11f7790040746d21496967010
+    restart: unless-stopped
+    stop_grace_period: 30s
+    shm_size: "256mb"
+    mem_limit: "1200m"
+    cpus: 1.5
+    devices:
+      - "${FRIGATE_RENDER_DEVICE:-/dev/dri/renderD128}:${FRIGATE_RENDER_DEVICE:-/dev/dri/renderD128}"
+    environment:
+      LIBVA_DRIVER_NAME: "${LIBVA_DRIVER_NAME:-i965}"
+      FRIGATE_CAMERA_HOST: "${FRIGATE_CAMERA_HOST:?set FRIGATE_CAMERA_HOST in .env}"
+      FRIGATE_RTSP_USER: "${FRIGATE_RTSP_USER:-admin}"
+      FRIGATE_RTSP_PORT: "${FRIGATE_RTSP_PORT:-554}"
+      FRIGATE_PTZ_PATH: "${FRIGATE_PTZ_PATH:-/live/101}"
+      FRIGATE_FIXED_PATH: "${FRIGATE_FIXED_PATH:-/live/201}"
+    secrets:
+      - FRIGATE_RTSP_PASSWORD
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - type: bind
+        source: ./config
+        target: /config
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${FRIGATE_MEDIA_PATH}
+        target: /media/frigate
+        bind:
+          create_host_path: false
+      - type: tmpfs
+        target: /tmp/cache
+        tmpfs:
+          size: 268435456
+    ports:
+      - "${FRIGATE_ADMIN_BIND_IP:-127.0.0.1}:${FRIGATE_ADMIN_PORT:-8971}:8971/tcp"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+secrets:
+  FRIGATE_RTSP_PASSWORD:
+    file: ./secrets/FRIGATE_RTSP_PASSWORD
+
+networks:
+  default:
+    name: "${FRIGATE_DOCKER_NETWORK:-frigate_default}"

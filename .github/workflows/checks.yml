@@ -1,0 +1,48 @@
+name: checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  portal-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: camera-portal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: camera-portal/go.mod
+          cache-dependency-path: camera-portal/go.sum
+      - run: go test ./...
+      - run: go test -race ./internal/portal
+
+  deployment-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: |
+          bash -n camera-portal-lan/scripts/verify.sh
+          bash -n frigate-1panel/find-camera-ip.sh
+          bash -n frigate-1panel/verify.sh
+      - name: Prepare example-only runtime files
+        run: |
+          cp camera-portal/.env.example camera-portal/.env
+          cp camera-portal-lan/.env.example camera-portal-lan/.env
+          cp frigate-1panel/.env.example frigate-1panel/.env
+          cp examples/cloudflare/.env.example examples/cloudflare/.env
+          mkdir -p camera-portal/data frigate-1panel/secrets examples/cloudflare/secrets
+          printf '%s' 'example-not-a-real-password' > frigate-1panel/secrets/FRIGATE_RTSP_PASSWORD
+          printf '%s' 'example-not-a-real-token' > examples/cloudflare/secrets/TUNNEL_TOKEN
+      - name: Render Compose projects
+        run: |
+          docker compose --project-directory frigate-1panel config --quiet
+          docker compose --project-directory camera-portal config --quiet
+          docker compose --project-directory camera-portal-lan config --quiet
+          docker compose --project-directory examples/cloudflare config --quiet

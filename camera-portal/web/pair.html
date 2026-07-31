@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#080b0d">
+  <title>绑定观看设备</title>
+  <link rel="icon" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/common.css">
+  <script src="/assets/pair.js" defer></script>
+</head>
+<body class="binding">
+  <main class="binding-card">
+    <img class="binding-mark" src="/assets/mark.svg" alt="">
+    <div id="bindingProgress">
+      <p class="eyebrow">CAMERA ACCESS</p>
+      <h1>正在绑定此设备</h1>
+      <p class="muted">完成后，此浏览器以后可直接查看画面。</p>
+      <div class="binding-loader" aria-hidden="true"></div>
+    </div>
+    <div id="browserGuide" hidden>
+      <p class="eyebrow">请切换浏览器</p>
+      <h1>在默认浏览器中打开</h1>
+      <p class="muted">当前是应用内置浏览器。请点右上角菜单，选择“在浏览器打开”；二维码暂未使用。</p>
+      <ol class="guide-steps">
+        <li><span>1</span>点右上角 <b>···</b></li>
+        <li><span>2</span>选择“在浏览器打开”</li>
+      </ol>
+      <button id="copyLink" class="primary-button" type="button">复制链接</button>
+      <p id="copyResult" class="small-note" aria-live="polite"></p>
+    </div>
+    <div id="bindingError" hidden>
+      <p class="eyebrow">绑定未完成</p>
+      <h1>此二维码无法使用</h1>
+      <p id="bindingErrorText" class="muted">二维码可能已过期或已被其他设备使用。</p>
+    </div>
+  </main>
+</body>
+</html>

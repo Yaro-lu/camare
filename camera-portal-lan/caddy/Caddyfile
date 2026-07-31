@@ -1,0 +1,22 @@
+{
+	admin off
+	auto_https off
+	http_port 8080
+	grace_period 10s
+}
+
+:8080 {
+	reverse_proxy camera-portal:8080 {
+		# Replace any client-supplied value with the server-only shared secret.
+		# The portal accepts LAN credentials only behind this fixed listener.
+		header_up X-Camera-LAN-Key {$LAN_ACCESS_KEY}
+		header_up Host {$LAN_HOSTPORT}
+		header_up X-Forwarded-Host {$LAN_HOSTPORT}
+		header_up X-Forwarded-Proto http
+		header_up X-Real-IP {remote_host}
+	}
+
+	header {
+		-Server
+	}
+}

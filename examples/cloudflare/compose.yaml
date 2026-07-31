@@ -1,0 +1,40 @@
+name: camera-portal-cloudflare
+
+services:
+  cloudflared:
+    image: "${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}"
+    container_name: camera-portal-cloudflared
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.35
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+    environment:
+      TUNNEL_TOKEN_FILE: /run/secrets/TUNNEL_TOKEN
+    secrets:
+      - TUNNEL_TOKEN
+    networks:
+      - public_tunnel
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+secrets:
+  TUNNEL_TOKEN:
+    file: ./secrets/TUNNEL_TOKEN
+
+networks:
+  public_tunnel:
+    external: true
+    name: "${PORTAL_INGRESS_NETWORK:-camera_portal_tunnel}"
