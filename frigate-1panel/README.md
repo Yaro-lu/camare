@@ -20,6 +20,8 @@ printf '%s' '摄像头RTSP密码' > secrets/FRIGATE_RTSP_PASSWORD
 chmod 600 .env secrets/FRIGATE_RTSP_PASSWORD
 ```
 
+根目录的 `sudo ./install.sh` 会自动生成 `.env` 和 secret，并只修改 `config/config.yml` 中的录像保留天数。覆盖前会生成备份，不会替换 Frigate 数据库或录像。
+
 创建录像目录。目录必须在启动前真实存在：
 
 ```sh

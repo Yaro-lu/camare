@@ -6,3 +6,4 @@ config/model_cache/
 config/.storage/
 *.log
 *.bak
+*.bak-*

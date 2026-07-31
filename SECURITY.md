@@ -7,6 +7,7 @@
 ## 不应提交到 GitHub 的内容
 
 - 任意真实 `.env`
+- 自动安装器生成的 `*.bak-*`
 - `camera-portal/data/state.json`
 - `frigate-1panel/secrets/`
 - `frigate-1panel/config/frigate.db*`
@@ -17,6 +18,16 @@
 - 录像、截图和包含家庭地址的画面
 
 即使仓库设为 private，也不建议把长期密钥直接提交到 Git。
+
+## 自动安装器边界
+
+`deploy.py` 只使用 Python 标准库，并以参数数组调用 Docker/Tailscale，不把用户输入拼接进 shell 命令。密码和 token 不出现在配置摘要或命令行参数中。
+
+实际部署前会检查 root、Docker、家庭网绑定地址和 VAAPI 设备。脚本不会更改路由器、DNS、DHCP、Mihomo、防火墙、IPv6，也不会删除或复制录像。`.env` 修改前最多保留三份权限收紧的备份；secret 文件原子覆盖且不额外备份。
+
+Portal 的 `.dockerignore` 排除了 `.env`、数据和备份，避免内部密钥进入 Docker 构建上下文或中间缓存。
+
+从互联网复制仓库后，应先检查当前分支和变更，再以 root 运行。不要使用来源不明的 `curl | sh` 命令。
 
 ## 网络边界
 

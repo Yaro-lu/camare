@@ -28,9 +28,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check shell syntax
         run: |
+          bash -n install.sh
           bash -n camera-portal-lan/scripts/verify.sh
           bash -n frigate-1panel/find-camera-ip.sh
           bash -n frigate-1panel/verify.sh
+      - name: Test automated installer
+        run: |
+          python3 -m py_compile deploy.py
+          python3 -m unittest discover -s tests -p 'test_*.py'
+          grep -qxF '.env*' camera-portal/.dockerignore
       - name: Prepare example-only runtime files
         run: |
           cp camera-portal/.env.example camera-portal/.env
