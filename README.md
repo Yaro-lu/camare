@@ -59,15 +59,88 @@ flowchart LR
 
 ```text
 .
+├── deploy.py               # 标准库 Python 交互式安装器
+├── install.sh              # Linux 一行启动入口
 ├── camera-portal/          # Go 门户、设备绑定、直播和回放代理
 ├── camera-portal-lan/      # 局域网固定 IP 免鉴权入口
 ├── frigate-1panel/         # Frigate 双画面录像模板
 ├── examples/cloudflare/    # Cloudflare Tunnel 可选编排
+├── tests/                  # 安装器回归测试
 ├── SECURITY.md             # 公开部署安全注意事项
 └── THIRD_PARTY_NOTICES.md  # 上游项目说明
 ```
 
 三个核心目录仍是独立 Compose 项目，可以分别导入 1Panel，也可以直接使用命令行管理。
+
+## 自动部署（推荐）
+
+自动安装器面向本项目已经验证过的结构：Linux x86-64、Intel VAAPI、一台摄像头提供两条 RTSP 流。它不会尝试自动猜测所有显卡、摄像头协议或 1Panel 版本。
+
+服务器先准备好：
+
+- Docker Engine 和 Docker Compose v2；
+- Python 3.10 或更高版本（只使用标准库，不需 `pip install`）；
+- Tailscale（公网模式的管理页需要；仅局域网模式可不装）；
+- 已挂载且重启后仍存在的录像目录；
+- `/dev/dri/renderD128` 或实际 Intel VAAPI render device；
+- 摄像头地址、RTSP 用户名/密码及两条 RTSP 路径；
+- 使用 Cloudflare 时，从 Zero Trust 复制 remotely-managed Tunnel token。
+
+然后执行：
+
+```sh
+git clone https://github.com/Yaro-lu/camare.git
+cd camare
+sudo ./install.sh
+```
+
+脚本会依次询问上述参数，并自动完成：
+
+1. 校验 Linux、root、Docker、服务器局域网 IP 和 VAAPI 设备；
+2. 生成四个 Compose 项目的 `.env`；
+3. 将摄像头密码和 Cloudflare token 写入权限为 `600` 的 Docker secret 文件；
+4. 原子更新 Frigate `config.yml` 中的录像保留天数并保留备份；
+5. 生成并同步 Portal/LAN 随机内部密钥；
+6. 创建缺失的 Portal 网络和数据目录；
+7. 校验 Compose，按 Frigate → Portal → LAN → Cloudflare 顺序启动；
+8. 可选配置 Tailscale Serve/Funnel；
+9. 检查公网源站和局域网入口健康状态。
+
+现有配置会成为下一次问答的默认值，秘密输入留空即可保留。修改配置前会留下最近三个 `*.bak-*` 备份；秘密文件不会额外复制。
+
+常用模式：
+
+```sh
+# 只预览问答和摘要，不写文件、不启动任何服务
+python3 deploy.py --dry-run
+
+# 只生成配置，适合随后导入 1Panel；不会启动 Docker/Tailscale
+./install.sh --configure-only
+
+# 完成问答后跳过最后一次确认
+sudo ./install.sh --yes
+```
+
+安装器刻意不会：
+
+- 安装或升级 Docker、1Panel、Tailscale；
+- 修改路由器、DHCP、DNS、Mihomo、防火墙或 IPv6；
+- 删除、移动或复制任何录像；
+- 在外接盘/NAS 未挂载时偷偷改写系统盘；
+- 把 Frigate 内部接口、管理入口或 LAN 免鉴权入口发布到公网。
+
+Cloudflare 的 Tunnel token 只能让 `cloudflared` 接入已经创建的 Tunnel。首次部署仍需在 Cloudflare 控制台添加一个 Published application：
+
+```text
+公开主机名：你的摄像头域名
+服务 URL：http://camera-portal:8080
+```
+
+这是 Cloudflare 模式唯一无法仅靠 Tunnel token 安全完成的配置。不要把服务 URL 改成 Frigate `5000`、go2rtc `1984` 或管理端口。
+
+自动部署失败时不会执行 `docker compose down`，也不会删除现有容器、卷或录像。修复提示中的前置条件后重新运行即可。
+
+如果录像路径位于 `/mnt` 或 `/media`，安装器还会确认其最近挂载点不是系统根分区；检测不到独立挂载时直接停止。本地系统盘录像请使用 `/srv/frigate/media` 这类路径。
 
 ## 部署前准备
 
@@ -470,6 +543,8 @@ Funnel 仍处于 beta，有固定端口和不可调整的带宽限制，更适�
 
 每个编排的工作目录必须是对应文件所在目录，否则 `.env`、相对卷和 Docker secret 路径会失效。
 
+使用自动安装器时，Compose 文件和目录结构完全相同。脚本不会调用版本相关的 1Panel 私有 API；部署完成后容器会立即出现在 1Panel 容器列表中。如需在“编排”页接管，请导入上述现有 Compose 文件和工作目录，不要再创建一套同名服务。
+
 不要让 1Panel 自动改写以下安全绑定：
 
 ```text
@@ -497,6 +572,8 @@ frigate-1panel/config/
 ```
 
 其中包含密码、设备绑定令牌哈希、Frigate 数据库和认证状态，必须加密保存，不能提交到 GitHub。
+
+自动安装器生成的 `*.bak-*` 也可能包含旧 `.env`，同样属于敏感配置；它们已被 Git 忽略，脚本只保留每个文件最近三份。
 
 ### 录像
 
@@ -681,6 +758,7 @@ df -h
 - 管理页依赖 Tailscale Serve；Cloudflare 模式也仍需要 Tailscale 管理入口。
 - LAN 入口故意免鉴权，接入家庭网络即具备观看权限。
 - 默认只配置两路画面，摄像头 ID 固定为 `ptz_view`、`fixed_view`。
+- 自动安装器当前只自动校验 Intel VAAPI；其他显卡应按手动部署章节调整。
 - 该 Portal 不负责转码；浏览器兼容性取决于摄像头编码和 Frigate/go2rtc。
 - Cloudflare 普通套餐的视频交付政策和 Tailscale Funnel 带宽限制都可能影响长期、高码率观看。
 - 这是家庭少量用户方案，不是商业多租户视频平台。
@@ -698,4 +776,4 @@ df -h
 
 ## 项目状态
 
-该仓库以“可恢复、可参考”为目标，优先保存已经运行验证的结构，不追求一键适配所有摄像头和硬件。提交问题时请隐藏公网域名、Tailscale 地址、摄像头账号、MAC、日志中的 token 和家庭网络信息。
+该仓库以“可恢复、可部署、可参考”为目标。自动安装器覆盖上方“已验证范围”，不追求无条件适配所有摄像头和硬件。提交问题时请隐藏公网域名、Tailscale 地址、摄像头账号、MAC、日志中的 token 和家庭网络信息。

@@ -1,3 +1,6 @@
 .git
+.env*
+*.bak
+*.bak-*
 data
 README.md
