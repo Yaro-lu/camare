@@ -319,17 +319,6 @@ func (a *App) vod(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "设备未绑定")
 		return
 	}
-	release, err := a.replayLimiter.Acquire(device.ID)
-	if err != nil {
-		status := http.StatusTooManyRequests
-		if errors.Is(err, errReplayGlobalLimit) {
-			status = http.StatusServiceUnavailable
-		}
-		writeError(w, status, "回看请求过多，请稍后重试")
-		return
-	}
-	defer release()
-
 	trimmed := strings.TrimPrefix(r.URL.Path, "/media/vod/")
 	parts := strings.Split(trimmed, "/")
 	if len(parts) != 6 || parts[1] != "start" || parts[3] != "end" {
@@ -346,6 +335,18 @@ func (a *App) vod(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "时间范围无效")
 		return
 	}
+	sessionID := fmt.Sprintf("%s/%d/%d", camera, start, end)
+	release, err := a.replayLimiter.AcquireSession(device.ID, sessionID)
+	if err != nil {
+		status := http.StatusTooManyRequests
+		if errors.Is(err, errReplayGlobalLimit) {
+			status = http.StatusServiceUnavailable
+		}
+		writeError(w, status, "回看请求过多，请稍后重试")
+		return
+	}
+	defer release()
+
 	upstreamPath := fmt.Sprintf(
 		"/vod/%s/start/%d/end/%d/%s",
 		camera,

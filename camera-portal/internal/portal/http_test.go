@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -357,6 +359,134 @@ func TestMediaProxyAllowlistAndTimeValidation(t *testing.T) {
 	app.PublicHandler().ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("over-one-hour VOD status = %d", response.Code)
+	}
+}
+
+func TestVODChildRequestsShareOneReplayQuotaSlot(t *testing.T) {
+	started := make(chan string, 8)
+	releaseUpstream := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(releaseUpstream) })
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- r.URL.Path
+		<-releaseUpstream
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	app, store := newTestApp(t, upstream.URL)
+	cookie := pairSession(t, app, store)
+	handler := app.PublicHandler()
+	files := []string{
+		"master.m3u8",
+		"init.mp4",
+		"segment-001.m4s",
+		"segment-002.m4s",
+		"segment-003.m4s",
+	}
+	responses := make(chan int, len(files))
+	for _, filename := range files {
+		filename := filename
+		go func() {
+			request := httptest.NewRequest(
+				http.MethodGet,
+				"/media/vod/ptz_view/start/1785302400/end/1785303000/"+filename,
+				nil,
+			)
+			request.AddCookie(cookie)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			responses <- response.Code
+		}()
+	}
+
+	for range files {
+		select {
+		case <-started:
+		case status := <-responses:
+			t.Fatalf("VOD child request completed with status %d before the shared session reached upstream", status)
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for VOD child requests to reach upstream")
+		}
+	}
+
+	releaseOnce.Do(func() { close(releaseUpstream) })
+	for range files {
+		if status := <-responses; status != http.StatusOK {
+			t.Fatalf("VOD child request status = %d, want 200", status)
+		}
+	}
+}
+
+func TestVODDistinctReplaySessionsStillEnforceDeviceQuota(t *testing.T) {
+	started := make(chan string, 8)
+	releaseUpstream := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(releaseUpstream) })
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- r.URL.Path
+		<-releaseUpstream
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	app, store := newTestApp(t, upstream.URL)
+	cookie := pairSession(t, app, store)
+	handler := app.PublicHandler()
+	responses := make(chan int, 4)
+	for i := 0; i < 4; i++ {
+		start := int64(1785302400 + i*600)
+		requestPath := fmt.Sprintf(
+			"/media/vod/ptz_view/start/%d/end/%d/master.m3u8",
+			start,
+			start+600,
+		)
+		go func() {
+			request := httptest.NewRequest(http.MethodGet, requestPath, nil)
+			request.AddCookie(cookie)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			responses <- response.Code
+		}()
+	}
+	for i := 0; i < 4; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for distinct replay sessions to reach upstream")
+		}
+	}
+
+	fifthResponse := make(chan int, 1)
+	go func() {
+		request := httptest.NewRequest(
+			http.MethodGet,
+			"/media/vod/fixed_view/start/1785302400/end/1785303000/master.m3u8",
+			nil,
+		)
+		request.AddCookie(cookie)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		fifthResponse <- response.Code
+	}()
+	select {
+	case status := <-fifthResponse:
+		if status != http.StatusTooManyRequests {
+			t.Fatalf("fifth replay session status = %d, want 429", status)
+		}
+	case path := <-started:
+		t.Fatalf("fifth replay session bypassed the device quota: %s", path)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for replay quota response")
+	}
+
+	releaseOnce.Do(func() { close(releaseUpstream) })
+	for i := 0; i < 4; i++ {
+		if status := <-responses; status != http.StatusOK {
+			t.Fatalf("allowed replay session status = %d, want 200", status)
+		}
 	}
 }
 

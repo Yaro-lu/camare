@@ -12,11 +12,68 @@ func TestClientPageUsesVersionedFirstPartyAssets(t *testing.T) {
 	}
 	html := string(data)
 	for _, asset := range []string{
-		"/assets/common.css?v=20260730-3",
-		"/assets/client.js?v=20260730-8",
+		"/assets/common.css?v=20260803-1",
+		"/assets/client.js?v=20260803-1",
 	} {
 		if !strings.Contains(html, asset) {
 			t.Fatalf("client.html missing versioned asset %q", asset)
+		}
+	}
+}
+
+func TestReplayTimelineUsesFixedCenterScrubber(t *testing.T) {
+	htmlData, err := FS.ReadFile("client.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(htmlData)
+	for _, content := range []string{
+		`id="timelineViewport"`,
+		`class="timeline-cursor"`,
+		`id="timelineRuler"`,
+		`id="availability"`,
+		`aria-valuetext="00:00:00"`,
+	} {
+		if !strings.Contains(html, content) {
+			t.Fatalf("client.html missing fixed-center timeline structure %q", content)
+		}
+	}
+
+	scriptData, err := FS.ReadFile("assets/client.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(scriptData)
+	for _, content := range []string{
+		`TIMELINE_VISIBLE_SECONDS = 2 * 60 * 60`,
+		`bindTimelinePointerControls()`,
+		`startTimelineInertia(`,
+		`settleTimelineSelection(`,
+		`state.hlsByCamera.get(cameraID)?.stopLoad?.()`,
+		`cancelReplayWork(false, false)`,
+		`state.recordingsDate !== selectedDate`,
+		`video.addEventListener("timeupdate"`,
+		`timelineViewport.addEventListener("lostpointercapture"`,
+	} {
+		if !strings.Contains(script, content) {
+			t.Fatalf("client.js missing fixed-center timeline behavior %q", content)
+		}
+	}
+
+	styleData, err := FS.ReadFile("assets/common.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	style := string(styleData)
+	for _, content := range []string{
+		`.timeline-viewport`,
+		`.timeline-track`,
+		`.timeline-cursor`,
+		`.availability-lane`,
+		`touch-action: none`,
+	} {
+		if !strings.Contains(style, content) {
+			t.Fatalf("common.css missing fixed-center timeline style %q", content)
 		}
 	}
 }

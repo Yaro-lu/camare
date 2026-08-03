@@ -121,3 +121,29 @@ func TestReplayLimiterBoundsEachDeviceAndGlobalConcurrency(t *testing.T) {
 	releaseTwo()
 	releaseThree()
 }
+
+func TestReplayLimiterBoundsConcurrentRequestsWithinOneSession(t *testing.T) {
+	limiter := newConcurrencyLimiter(2, 1)
+	releases := make([]func(), 0, maxConcurrentReplaySessionSubrequests)
+	for i := 0; i < maxConcurrentReplaySessionSubrequests; i++ {
+		release, err := limiter.AcquireSession("device-1", "camera-1/100/200")
+		if err != nil {
+			t.Fatalf("session subrequest %d error = %v", i+1, err)
+		}
+		releases = append(releases, release)
+	}
+	if _, err := limiter.AcquireSession("device-1", "camera-1/100/200"); !errors.Is(err, errReplaySessionLimit) {
+		t.Fatalf("excess session subrequest error = %v", err)
+	}
+
+	releases[0]()
+	releases[0]()
+	replacement, err := limiter.AcquireSession("device-1", "camera-1/100/200")
+	if err != nil {
+		t.Fatalf("released session subrequest was not reusable: %v", err)
+	}
+	replacement()
+	for _, release := range releases[1:] {
+		release()
+	}
+}

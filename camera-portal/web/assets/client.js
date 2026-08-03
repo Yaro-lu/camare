@@ -9,19 +9,32 @@ const state = {
   replaySessions: new Map(),
   replayWatchdogs: new Map(),
   replayRetryCounts: new Map(),
+  replayUserPaused: new Set(),
   livePlayers: new Map(),
   liveRetryCounts: new Map(),
   playableRanges: [],
+  timelineRanges: [],
   replayGeneration: 0,
   recordingsAbortController: null,
+  recordingsDate: "",
   recordingTimezone: "Asia/Shanghai",
   recordingUTCOffsetSeconds: 8 * 60 * 60,
   focusedReplayCamera: null,
   replayAdvancePending: false,
+  timelinePixelsPerSecond: 0,
+  timelineGesture: null,
+  timelineMotionFrame: 0,
+  timelineCommitTimer: 0,
+  timelineSnapDirection: 0,
+  timelineFollowing: true,
+  timelineResizeObserver: null,
   suspended: false,
 };
 
 const REPLAY_WINDOW_SECONDS = 60 * 60;
+const TIMELINE_VISIBLE_SECONDS = 2 * 60 * 60;
+const TIMELINE_SETTLE_MS = 140;
+const TIMELINE_KEY_COMMIT_MS = 260;
 const LIVE_FIRST_FRAME_TIMEOUT_MS = 10000;
 const LIVE_STALL_TIMEOUT_MS = 8000;
 const REPLAY_FIRST_FRAME_TIMEOUT_MS = 10000;
@@ -35,10 +48,15 @@ const replayTime = document.querySelector("#replayTime");
 const timeline = document.querySelector("#timeline");
 const timelineTime = document.querySelector("#timelineTime");
 const availability = document.querySelector("#availability");
+const timelineViewport = document.querySelector("#timelineViewport");
+const timelineTrack = document.querySelector("#timelineTrack");
+const timelineRuler = document.querySelector("#timelineRuler");
+const timelineLegend = document.querySelector("#timelineLegend");
 const statusText = document.querySelector("#statusText");
 const toast = document.querySelector("#toast");
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
 let hlsLibraryPromise;
 let jsmpegLibraryPromise;
 let videoRTCModulePromise;
@@ -232,7 +250,21 @@ function buildReplayView() {
     card.append(video, empty, loader, label);
     replayGrid.append(card);
     trackVideoLoading(video, loader);
-    addPlaybackToggle(card, () => video);
+    addPlaybackToggle(card, () => video, (paused) => {
+      const session = state.replaySessions.get(camera.id);
+      if (session) session.shouldPlay = !paused;
+      if (paused) {
+        state.replayUserPaused.add(camera.id);
+        state.hlsByCamera.get(camera.id)?.stopLoad?.();
+        clearReplayWatchdog(camera.id);
+      } else {
+        state.replayUserPaused.delete(camera.id);
+        state.hlsByCamera.get(camera.id)?.startLoad?.(video.currentTime);
+        if (session) {
+          armReplayWatchdog(camera.id, session, state.replayGeneration, replayDate.value);
+        }
+      }
+    });
     state.replayPlayers.set(camera.id, video);
     state.replayMessages.set(camera.id, empty);
     state.replayLoaders.set(camera.id, loader);
@@ -242,6 +274,7 @@ function buildReplayView() {
     video.addEventListener("ended", () => {
       advanceReplayAfterEnd(camera.id).catch((error) => handlePlaybackError(error, "下一段录像加载失败"));
     });
+    video.addEventListener("timeupdate", () => followReplayTime(camera.id));
     bindFullscreen(card, video);
   }
 }
@@ -641,7 +674,9 @@ function enterFullscreen(card, player) {
   try {
     if (video) {
       configureVideo(video);
-      video.play().catch(() => {});
+      if (!(state.mode === "replay" && state.replayUserPaused.has(cameraID))) {
+        video.play().catch(() => {});
+      }
     }
     if (video?.webkitEnterFullscreen) {
       video.webkitEnterFullscreen();
@@ -690,11 +725,10 @@ async function restoreReplayGrid(cameraID) {
 
   if (Number.isFinite(timestamp)) {
     const dayStart = recordingDayStartEpoch(replayDate.value);
-    timeline.value = Math.max(0, Math.min(86399, Math.floor(timestamp - dayStart)));
-    updateTimelineLabel();
+    setTimelineSeconds(timestamp - dayStart);
   }
   const selectedDate = replayDate.value;
-  const generation = cancelReplayWork(false);
+  const generation = cancelReplayWork(false, false);
   await playSelectedTime(generation, selectedDate);
 }
 
@@ -709,19 +743,29 @@ function bindControls() {
     });
   }
   replayDate.addEventListener("change", () => {
+    cancelTimelineMotion();
+    updateTimelineBounds();
     loadRecordings().catch((error) => handlePlaybackError(error, "录像时间轴读取失败"));
   });
   replayTime.addEventListener("change", () => {
     const seconds = parseTimeInput(replayTime.value);
     if (seconds === null) return;
-    timeline.value = seconds;
-    updateTimelineLabel();
-    playCurrentSelection().catch((error) => handlePlaybackError(error, "录像暂时无法播放"));
+    cancelTimelineMotion();
+    state.timelineSnapDirection = 0;
+    setTimelineSeconds(seconds);
+    if (state.recordingsAbortController) return;
+    commitTimelineSelection();
   });
-  timeline.addEventListener("input", updateTimelineLabel);
-  timeline.addEventListener("change", () => {
-    playCurrentSelection().catch((error) => handlePlaybackError(error, "录像暂时无法播放"));
-  });
+  buildTimelineRuler();
+  buildTimelineLegend();
+  bindTimelinePointerControls();
+  bindTimelineKeyboardControls();
+  if ("ResizeObserver" in window) {
+    state.timelineResizeObserver = new ResizeObserver(() => layoutTimeline());
+    state.timelineResizeObserver.observe(timelineViewport);
+  } else {
+    window.addEventListener("resize", layoutTimeline);
+  }
 }
 
 async function switchMode(mode) {
@@ -736,6 +780,7 @@ async function switchMode(mode) {
   replayView.hidden = !replay;
   statusText.textContent = replay ? "录像回看" : "连接中";
   if (replay) {
+    state.replayUserPaused.clear();
     cancelReplayWork();
     stopLive();
     liveView.replaceChildren();
@@ -749,17 +794,28 @@ async function switchMode(mode) {
 
 function setToday() {
   const now = recordingDateParts(Date.now());
-  replayDate.value = `${now.year}-${String(now.month).padStart(2, "0")}-${String(now.day).padStart(2, "0")}`;
-  timeline.value = Math.max(0, now.hour * 3600 + now.minute * 60 + now.second - 15 * 60);
-  updateTimelineLabel();
+  const today = `${now.year}-${String(now.month).padStart(2, "0")}-${String(now.day).padStart(2, "0")}`;
+  replayDate.max = today;
+  replayDate.value = today;
+  updateTimelineBounds();
+  setTimelineSeconds(now.hour * 3600 + now.minute * 60 + now.second - 15 * 60);
 }
 
 async function loadRecordings() {
   if (state.mode !== "replay" || !state.cameras.length || !replayDate.value) return;
   const selectedDate = replayDate.value;
   const generation = cancelReplayWork();
+  state.timelineFollowing = true;
+  state.timelineSnapDirection = 0;
+  state.recordingsDate = "";
+  state.recordingsByCamera = new Map();
+  state.playableRanges = [];
+  state.timelineRanges = [];
+  availability.replaceChildren();
   const controller = new AbortController();
   state.recordingsAbortController = controller;
+  timelineViewport.classList.add("is-disabled");
+  timelineViewport.setAttribute("aria-disabled", "true");
   for (const camera of state.cameras) {
     setStreamLoading(state.replayLoaders.get(camera.id), true);
     const message = state.replayMessages.get(camera.id);
@@ -788,12 +844,17 @@ async function loadRecordings() {
   } finally {
     if (state.recordingsAbortController === controller) {
       state.recordingsAbortController = null;
+      timelineViewport.classList.remove("is-disabled");
+      timelineViewport.setAttribute("aria-disabled", "false");
     }
   }
   if (!isCurrentReplay(generation, selectedDate)) return;
   state.recordingsByCamera = new Map(entries);
   state.playableRanges = calculatePlayableRanges();
+  state.timelineRanges = calculateTimelineRanges();
+  state.recordingsDate = selectedDate;
   renderAvailability(start);
+  layoutTimeline();
   for (const camera of state.cameras) {
     const recordings = state.recordingsByCamera.get(camera.id) || [];
     showReplayMessage(camera.id, recordings.length ? "拖动时间轴开始回看" : "当天暂无录像");
@@ -805,15 +866,32 @@ async function loadRecordings() {
 
 function renderAvailability(dayStart) {
   availability.replaceChildren();
-  const origin = dayStart;
-  for (const recording of state.playableRanges) {
-    const segment = document.createElement("i");
-    const left = Math.max(0, ((recording.start - origin) / 86400) * 100);
-    const width = Math.max(0.08, ((recording.end - recording.start) / 86400) * 100);
-    segment.style.left = `${left}%`;
-    segment.style.width = `${Math.min(width, 100 - left)}%`;
-    availability.append(segment);
+  for (const camera of state.cameras) {
+    const lane = document.createElement("div");
+    lane.className = "availability-lane";
+    lane.setAttribute("aria-label", `${camera.name}录像`);
+    const recordings = mergeSegments(state.recordingsByCamera.get(camera.id) || []);
+    for (const recording of recordings) {
+      const segmentStart = Math.max(dayStart, recording.start);
+      const segmentEnd = Math.min(dayStart + 86400, recording.end);
+      if (segmentEnd <= segmentStart) continue;
+      const segment = document.createElement("i");
+      const left = ((segmentStart - dayStart) / 86400) * 100;
+      const width = Math.max(0.02, ((segmentEnd - segmentStart) / 86400) * 100);
+      segment.style.left = `${left}%`;
+      segment.style.width = `${Math.min(width, 100 - left)}%`;
+      lane.append(segment);
+    }
+    availability.append(lane);
   }
+}
+
+function calculateTimelineRanges() {
+  const recordings = [];
+  for (const camera of state.cameras) {
+    recordings.push(...(state.recordingsByCamera.get(camera.id) || []));
+  }
+  return mergeSegments(recordings, 0);
 }
 
 function calculatePlayableRanges() {
@@ -828,14 +906,14 @@ function calculatePlayableRanges() {
   return common || [];
 }
 
-function mergeSegments(recordings) {
+function mergeSegments(recordings, maximumGap = 0.5) {
   const merged = [];
   const sorted = [...recordings].sort((left, right) => Number(left.start_time) - Number(right.start_time));
   for (const item of sorted) {
     const start = Number(item.start_time);
     const end = Number(item.end_time);
     const previous = merged[merged.length - 1];
-    if (previous && start - previous.end <= 0.5) {
+    if (previous && start - previous.end <= maximumGap) {
       previous.end = Math.max(previous.end, end);
     } else {
       merged.push({start, end});
@@ -861,21 +939,356 @@ function intersectRanges(left, right) {
   return result;
 }
 
-function updateTimelineLabel() {
+function buildTimelineRuler() {
+  timelineRuler.replaceChildren();
+  for (let seconds = 0; seconds <= 86400; seconds += 5 * 60) {
+    const tick = document.createElement("i");
+    tick.style.left = `${(seconds / 86400) * 100}%`;
+    if (seconds % (60 * 60) === 0) {
+      tick.className = "hour";
+    } else if (seconds % (30 * 60) === 0) {
+      tick.className = "major";
+    }
+    if (seconds % (30 * 60) === 0 && seconds < 86400) {
+      const label = document.createElement("span");
+      label.textContent = formatSeconds(seconds).slice(0, 5);
+      tick.append(label);
+    }
+    timelineRuler.append(tick);
+  }
+}
+
+function buildTimelineLegend() {
+  timelineLegend.replaceChildren();
+  for (const camera of state.cameras) {
+    const item = document.createElement("span");
+    const marker = document.createElement("i");
+    const label = document.createElement("b");
+    label.textContent = camera.name;
+    item.append(marker, label);
+    timelineLegend.append(item);
+  }
+}
+
+function updateTimelineBounds() {
+  const now = recordingDateParts(Date.now());
+  const today = `${now.year}-${String(now.month).padStart(2, "0")}-${String(now.day).padStart(2, "0")}`;
+  let maximum = 86399;
+  if (replayDate.value === today) {
+    maximum = now.hour * 3600 + now.minute * 60 + now.second;
+  } else if (replayDate.value > today) {
+    maximum = 0;
+  }
+  timeline.max = String(maximum);
+  timelineViewport.setAttribute("aria-valuemax", String(maximum));
+  if (Number(timeline.value) > maximum) {
+    setTimelineSeconds(maximum);
+  }
+}
+
+function setTimelineSeconds(value, {syncTimeInput = true} = {}) {
+  const maximum = Number(timeline.max || 86399);
+  const seconds = Math.max(0, Math.min(maximum, Number(value) || 0));
+  timeline.value = String(Math.round(seconds));
+  updateTimelineLabel(syncTimeInput);
+  renderTimelinePosition(seconds);
+}
+
+function updateTimelineLabel(syncTimeInput = true) {
   const seconds = Number(timeline.value);
   const value = formatSeconds(seconds);
-  timelineTime.textContent = value.slice(0, 5);
-  replayTime.value = value;
+  timelineTime.textContent = value;
+  if (syncTimeInput && document.activeElement !== replayTime) {
+    replayTime.value = value;
+  }
+  timelineViewport.setAttribute("aria-valuenow", String(Math.floor(seconds)));
+  timelineViewport.setAttribute("aria-valuetext", value);
+}
+
+function layoutTimeline() {
+  const width = timelineViewport.getBoundingClientRect().width;
+  if (!width) return;
+  state.timelinePixelsPerSecond = width / TIMELINE_VISIBLE_SECONDS;
+  timelineTrack.style.width = `${Math.ceil(86400 * state.timelinePixelsPerSecond)}px`;
+  renderTimelinePosition(Number(timeline.value));
+}
+
+function renderTimelinePosition(seconds) {
+  if (!state.timelinePixelsPerSecond) return;
+  timelineTrack.style.transform = `translate3d(${-seconds * state.timelinePixelsPerSecond}px, 0, 0)`;
+}
+
+function pauseReplayForTimeline() {
+  const resumeCameraIDs = [];
+  for (const [cameraID, video] of state.replayPlayers) {
+    const session = state.replaySessions.get(cameraID);
+    if (!session) continue;
+    state.hlsByCamera.get(cameraID)?.stopLoad?.();
+    if (!video.paused) resumeCameraIDs.push(cameraID);
+    session.shouldPlay = false;
+    clearReplayWatchdog(cameraID);
+    video.pause();
+  }
+  return resumeCameraIDs;
+}
+
+function resumeReplayAfterCancelledTimeline(resumeCameraIDs) {
+  for (const cameraID of resumeCameraIDs || []) {
+    const video = state.replayPlayers.get(cameraID);
+    const session = state.replaySessions.get(cameraID);
+    if (video && session) {
+      session.shouldPlay = true;
+      state.hlsByCamera.get(cameraID)?.startLoad?.(video.currentTime);
+      armReplayWatchdog(cameraID, session, state.replayGeneration, replayDate.value);
+      video.play().catch(() => {});
+    }
+  }
+  state.timelineFollowing = true;
+}
+
+function bindTimelinePointerControls() {
+  timelineViewport.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary || event.button !== 0 || state.recordingsAbortController) return;
+    cancelTimelineMotion();
+    const now = performance.now();
+    const seconds = Number(timeline.value);
+    state.timelineFollowing = false;
+    state.timelineGesture = {
+      pointerID: event.pointerId,
+      pointerType: event.pointerType,
+      startX: event.clientX,
+      startSeconds: seconds,
+      lastSeconds: seconds,
+      lastTime: now,
+      velocity: 0,
+      moved: false,
+      resumeCameraIDs: pauseReplayForTimeline(),
+    };
+    timelineViewport.classList.add("is-scrubbing");
+    try {
+      timelineViewport.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Synthetic events and older WebKit builds may reject pointer capture.
+    }
+    event.preventDefault();
+  });
+
+  timelineViewport.addEventListener("pointermove", (event) => {
+    const gesture = state.timelineGesture;
+    if (!gesture || gesture.pointerID !== event.pointerId || !state.timelinePixelsPerSecond) return;
+    const deltaX = event.clientX - gesture.startX;
+    const target = gesture.startSeconds - deltaX / state.timelinePixelsPerSecond;
+    const previous = Number(timeline.value);
+    setTimelineSeconds(target);
+    const current = Number(timeline.value);
+    const now = performance.now();
+    const elapsed = Math.max(1, now - gesture.lastTime);
+    const instantaneous = (current - gesture.lastSeconds) / elapsed;
+    gesture.velocity = gesture.velocity * 0.65 + instantaneous * 0.35;
+    gesture.lastSeconds = current;
+    gesture.lastTime = now;
+    gesture.moved ||= Math.abs(deltaX) >= 3;
+    if (current !== previous) {
+      state.timelineSnapDirection = Math.sign(current - previous);
+    }
+    event.preventDefault();
+  });
+
+  const finish = (event, cancelled = false) => {
+    const gesture = state.timelineGesture;
+    if (!gesture || gesture.pointerID !== event.pointerId) return;
+    state.timelineGesture = null;
+    timelineViewport.classList.remove("is-scrubbing");
+    try {
+      timelineViewport.releasePointerCapture?.(event.pointerId);
+    } catch {
+      // Pointer capture can already be released when the browser cancels a gesture.
+    }
+    if (cancelled) {
+      setTimelineSeconds(gesture.startSeconds);
+      resumeReplayAfterCancelledTimeline(gesture.resumeCameraIDs);
+      return;
+    }
+    if (!gesture.moved && state.timelinePixelsPerSecond) {
+      const bounds = timelineViewport.getBoundingClientRect();
+      const offset = event.clientX - (bounds.left + bounds.width / 2);
+      const target = gesture.startSeconds + offset / state.timelinePixelsPerSecond;
+      const previous = Number(timeline.value);
+      setTimelineSeconds(target);
+      state.timelineSnapDirection = Math.sign(Number(timeline.value) - previous);
+    }
+    const useInertia = !prefersReducedMotion &&
+      gesture.pointerType !== "mouse" &&
+      gesture.moved &&
+      Math.abs(gesture.velocity) >= 0.15;
+    if (useInertia) {
+      startTimelineInertia(gesture.velocity);
+    } else {
+      settleTimelineSelection();
+    }
+  };
+  timelineViewport.addEventListener("pointerup", (event) => finish(event));
+  timelineViewport.addEventListener("pointercancel", (event) => finish(event, true));
+  timelineViewport.addEventListener("lostpointercapture", (event) => finish(event, true));
+}
+
+function bindTimelineKeyboardControls() {
+  timelineViewport.addEventListener("keydown", (event) => {
+    if (state.recordingsAbortController) return;
+    let target = Number(timeline.value);
+    let handled = true;
+    const directionStep = event.shiftKey ? 60 : 10;
+    if (event.key === "ArrowLeft") {
+      target -= directionStep;
+    } else if (event.key === "ArrowRight") {
+      target += directionStep;
+    } else if (event.key === "PageUp") {
+      target += 15 * 60;
+    } else if (event.key === "PageDown") {
+      target -= 15 * 60;
+    } else if (event.key === "Home" && state.timelineRanges.length) {
+      target = state.timelineRanges[0].start - recordingDayStartEpoch(replayDate.value);
+    } else if (event.key === "End" && state.timelineRanges.length) {
+      const last = state.timelineRanges[state.timelineRanges.length - 1];
+      target = last.end - recordingDayStartEpoch(replayDate.value) - 0.25;
+    } else {
+      handled = false;
+    }
+    if (!handled) return;
+    event.preventDefault();
+    cancelTimelineMotion();
+    state.timelineFollowing = false;
+    pauseReplayForTimeline();
+    const previous = Number(timeline.value);
+    setTimelineSeconds(target);
+    state.timelineSnapDirection = Math.sign(Number(timeline.value) - previous);
+    state.timelineCommitTimer = window.setTimeout(settleTimelineSelection, TIMELINE_KEY_COMMIT_MS);
+  });
+}
+
+function startTimelineInertia(initialVelocity) {
+  let velocity = Math.max(-8, Math.min(8, initialVelocity));
+  let previousTime = performance.now();
+  const move = (now) => {
+    const elapsed = Math.min(32, Math.max(1, now - previousTime));
+    previousTime = now;
+    const before = Number(timeline.value);
+    setTimelineSeconds(before + velocity * elapsed);
+    const after = Number(timeline.value);
+    if (after !== before) {
+      state.timelineSnapDirection = Math.sign(after - before);
+    }
+    velocity *= Math.exp(-elapsed / 260);
+    if (Math.abs(velocity) < 0.02 || after === before) {
+      state.timelineMotionFrame = 0;
+      settleTimelineSelection();
+      return;
+    }
+    state.timelineMotionFrame = requestAnimationFrame(move);
+  };
+  state.timelineMotionFrame = requestAnimationFrame(move);
+}
+
+function settleTimelineSelection() {
+  cancelTimelineMotion();
+  const dayStart = recordingDayStartEpoch(replayDate.value);
+  const selected = dayStart + Number(timeline.value);
+  const snapped = nearestPlayableTime(selected, state.timelineRanges, state.timelineSnapDirection);
+  if (snapped === null) {
+    commitTimelineSelection();
+    return;
+  }
+  const target = snapped - dayStart;
+  if (Math.abs(target - Number(timeline.value)) < 0.5) {
+    commitTimelineSelection();
+    return;
+  }
+  animateTimelineTo(target, commitTimelineSelection);
+}
+
+function animateTimelineTo(target, onComplete) {
+  if (prefersReducedMotion) {
+    setTimelineSeconds(target);
+    onComplete?.();
+    return;
+  }
+  const start = Number(timeline.value);
+  const startedAt = performance.now();
+  const move = (now) => {
+    const progress = Math.min(1, (now - startedAt) / TIMELINE_SETTLE_MS);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    setTimelineSeconds(start + (target - start) * eased);
+    if (progress >= 1) {
+      state.timelineMotionFrame = 0;
+      setTimelineSeconds(target);
+      onComplete?.();
+      return;
+    }
+    state.timelineMotionFrame = requestAnimationFrame(move);
+  };
+  state.timelineMotionFrame = requestAnimationFrame(move);
+}
+
+function cancelTimelineMotion() {
+  if (state.timelineMotionFrame) {
+    cancelAnimationFrame(state.timelineMotionFrame);
+    state.timelineMotionFrame = 0;
+  }
+  clearTimeout(state.timelineCommitTimer);
+  state.timelineCommitTimer = 0;
+}
+
+function commitTimelineSelection() {
+  state.timelineFollowing = true;
+  const work = playCurrentSelection();
+  state.timelineSnapDirection = 0;
+  work.catch((error) => handlePlaybackError(error, "录像暂时无法播放"));
+}
+
+function followReplayTime(cameraID) {
+  if (
+    state.mode !== "replay" ||
+    state.suspended ||
+    !state.timelineFollowing ||
+    state.timelineGesture ||
+    state.timelineMotionFrame ||
+    document.activeElement === replayTime
+  ) {
+    return;
+  }
+  const masterCameraID = replayMasterCameraID();
+  if (!masterCameraID || cameraID !== masterCameraID) return;
+  const timestamp = currentReplayTimestamp(cameraID);
+  if (!Number.isFinite(timestamp)) return;
+  const dayStart = recordingDayStartEpoch(replayDate.value);
+  updateTimelineBounds();
+  setTimelineSeconds(timestamp - dayStart);
+}
+
+function replayMasterCameraID() {
+  if (state.focusedReplayCamera && state.replaySessions.has(state.focusedReplayCamera)) {
+    return state.focusedReplayCamera;
+  }
+  return state.cameras.find((camera) => {
+    const video = state.replayPlayers.get(camera.id);
+    return state.replaySessions.has(camera.id) && video && !video.paused && !video.ended;
+  })?.id || state.cameras.find((camera) => {
+    const video = state.replayPlayers.get(camera.id);
+    return state.replaySessions.has(camera.id) && video && !video.ended;
+  })?.id || null;
 }
 
 function playCurrentSelection() {
   const selectedDate = replayDate.value;
-  const generation = cancelReplayWork(false);
+  if (!selectedDate || state.recordingsDate !== selectedDate) {
+    return Promise.resolve();
+  }
+  const generation = cancelReplayWork(false, false);
   return playSelectedTime(generation, selectedDate);
 }
 
 async function playSelectedTime(generation, selectedDate) {
-  if (!isCurrentReplay(generation, selectedDate)) return;
+  if (!isCurrentReplay(generation, selectedDate) || state.recordingsDate !== selectedDate) return;
   const hasRecordings = [...state.recordingsByCamera.values()].some((recordings) => recordings.length);
   if (!hasRecordings) {
     for (const camera of state.cameras) {
@@ -885,14 +1298,15 @@ async function playSelectedTime(generation, selectedDate) {
   }
   const dayStart = recordingDayStartEpoch(selectedDate);
   const original = dayStart + Number(timeline.value);
-  const requested = nearestPlayableTime(original, state.playableRanges);
+  const commonRequested = nearestPlayableTime(original, state.playableRanges);
+  const requested = nearestPlayableTime(original, state.timelineRanges) ?? commonRequested;
   if (requested !== null) {
     const snappedSecond = Math.max(0, Math.min(86399, Math.floor(requested - dayStart)));
-    timeline.value = snappedSecond;
-    updateTimelineLabel();
+    setTimelineSeconds(snappedSecond);
   }
   const dayEnd = dayStart + 86400;
   const playback = [];
+  const desiredPlayback = new Map();
   const selectedCameras = state.focusedReplayCamera
     ? state.cameras.filter((camera) => camera.id === state.focusedReplayCamera)
     : state.cameras;
@@ -904,13 +1318,14 @@ async function playSelectedTime(generation, selectedDate) {
   }
   for (const camera of selectedCameras) {
     const recordings = state.recordingsByCamera.get(camera.id) || [];
-    const cameraTime = requested ?? nearestPlayableTime(original, mergeSegments(recordings));
+    const cameraTime = requested;
     const segment = recordings.find((item) =>
       cameraTime !== null &&
       cameraTime >= Number(item.start_time) &&
       cameraTime <= Number(item.end_time)
     );
     if (!segment) {
+      stopReplay(camera.id);
       showReplayMessage(camera.id, recordings.length ? "附近没有可播放录像" : "当天暂无录像");
       continue;
     }
@@ -930,6 +1345,7 @@ async function playSelectedTime(generation, selectedDate) {
       continue;
     }
     const source = `/media/vod/${encodeURIComponent(camera.id)}/start/${windowStart}/end/${windowEnd}/master.m3u8`;
+    desiredPlayback.set(camera.id, !state.replayUserPaused.has(camera.id));
     playback.push(playHLS(camera.id, {
       source,
       windowStart,
@@ -938,16 +1354,101 @@ async function playSelectedTime(generation, selectedDate) {
       requestedTimestamp: cameraTime,
       recordings: windowRecordings,
       inpointOffset,
+      shouldPlay: false,
     }, generation, selectedDate));
   }
   if (!playback.length) {
     return;
   }
   await Promise.allSettled(playback);
+  await startPreparedReplay(desiredPlayback, generation, selectedDate);
 }
 
-function nearestPlayableTime(requested, ranges) {
+async function startPreparedReplay(desiredPlayback, generation, selectedDate) {
+  const cameraIDs = [...desiredPlayback.keys()].filter((cameraID) => state.replaySessions.has(cameraID));
+  await Promise.all(cameraIDs.map((cameraID) => waitForReplayReady(cameraID, generation, selectedDate)));
+  if (!isCurrentReplay(generation, selectedDate)) return;
+
+  for (const cameraID of cameraIDs) {
+    const session = state.replaySessions.get(cameraID);
+    const video = state.replayPlayers.get(cameraID);
+    if (!session || !video) continue;
+    // The preparation barrier can take a moment on mobile Safari. Respect the
+    // user's latest pause/resume choice instead of the state captured before it.
+    session.shouldPlay = !state.replayUserPaused.has(cameraID);
+    if (!session.shouldPlay) {
+      video.pause();
+      continue;
+    }
+    state.hlsByCamera.get(cameraID)?.startLoad?.(video.currentTime);
+    armReplayWatchdog(cameraID, session, generation, selectedDate);
+  }
+  for (const cameraID of cameraIDs) {
+    const session = state.replaySessions.get(cameraID);
+    const video = state.replayPlayers.get(cameraID);
+    if (!session?.shouldPlay || !video) continue;
+    video.play().catch(() => {});
+  }
+}
+
+function waitForReplayReady(cameraID, generation, selectedDate) {
+  const video = state.replayPlayers.get(cameraID);
+  const initialSession = state.replaySessions.get(cameraID);
+  const source = initialSession?.source;
+  const target = Number(initialSession?.startPosition);
+  const nativeHLS = initialSession?.nativeHLS === true;
+  const atTarget = () => video && (nativeHLS
+    ? video.readyState >= HTMLMediaElement.HAVE_METADATA
+    : video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+      !video.seeking &&
+      (!Number.isFinite(target) || Math.abs(video.currentTime - target) <= 0.75));
+  if (!video || !source || atTarget()) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let timer;
+    const finish = () => {
+      clearTimeout(timer);
+      video.removeEventListener("loadedmetadata", check);
+      video.removeEventListener("loadeddata", check);
+      video.removeEventListener("canplay", check);
+      video.removeEventListener("seeked", check);
+      video.removeEventListener("error", finish);
+      resolve();
+    };
+    const check = () => {
+      if (
+        !isCurrentReplay(generation, selectedDate) ||
+        state.replaySessions.get(cameraID)?.source !== source
+      ) {
+        finish();
+        return;
+      }
+      if (atTarget()) finish();
+    };
+    video.addEventListener("loadedmetadata", check);
+    video.addEventListener("loadeddata", check);
+    video.addEventListener("canplay", check);
+    video.addEventListener("seeked", check);
+    video.addEventListener("error", finish, {once: true});
+    timer = setTimeout(finish, 3000);
+  });
+}
+
+function nearestPlayableTime(requested, ranges, direction = state.timelineSnapDirection) {
   if (!ranges.length) return null;
+  if (direction > 0) {
+    for (const range of ranges) {
+      if (requested >= range.start && requested < range.end) return requested;
+      if (requested < range.start) return range.start;
+    }
+  } else if (direction < 0) {
+    for (let index = ranges.length - 1; index >= 0; index -= 1) {
+      const range = ranges[index];
+      if (requested >= range.start && requested < range.end) return requested;
+      if (requested >= range.end) return Math.max(range.start, range.end - 0.25);
+    }
+  }
   let nearest = null;
   let nearestDistance = Number.POSITIVE_INFINITY;
   for (const range of ranges) {
@@ -1033,21 +1534,46 @@ async function advanceReplayAfterEnd(cameraID) {
   ) {
     return;
   }
-  const windowEnd = Number(state.replaySessions.get(cameraID)?.windowEnd);
+  const visibleCameraIDs = state.focusedReplayCamera
+    ? [state.focusedReplayCamera]
+    : state.cameras.map((camera) => camera.id);
+  const activeSessions = visibleCameraIDs
+    .map((id) => ({id, session: state.replaySessions.get(id), video: state.replayPlayers.get(id)}))
+    .filter(({session}) => Boolean(session));
+  if (activeSessions.some(({id, video}) => id !== cameraID && video && !video.ended)) {
+    stopReplay(cameraID);
+    showReplayMessage(cameraID, "此后暂无录像");
+    return;
+  }
+  const windowEnd = Math.max(...activeSessions.map(({session}) => Number(session.windowEnd)));
   if (!Number.isFinite(windowEnd)) return;
-  const next = nextPlayableTime(windowEnd, state.playableRanges);
-  if (next === null) return;
+  const nextRanges = state.focusedReplayCamera
+    ? mergeSegments(state.recordingsByCamera.get(state.focusedReplayCamera) || [])
+    : state.timelineRanges;
+  const next = nextPlayableTime(windowEnd, nextRanges);
+  const finishPlayback = () => {
+    for (const {id} of activeSessions) {
+      stopReplay(id);
+      showReplayMessage(id, "此后暂无录像");
+    }
+  };
+  if (next === null) {
+    finishPlayback();
+    return;
+  }
 
   const dayStart = recordingDayStartEpoch(replayDate.value);
   const dayEnd = dayStart + 86400;
-  if (next >= dayEnd) return;
-  timeline.value = Math.max(0, Math.min(86399, Math.floor(next - dayStart)));
-  updateTimelineLabel();
+  if (next >= dayEnd) {
+    finishPlayback();
+    return;
+  }
+  setTimelineSeconds(next - dayStart);
 
   state.replayAdvancePending = true;
   try {
     const selectedDate = replayDate.value;
-    const generation = cancelReplayWork(false);
+    const generation = cancelReplayWork(false, false);
     await playSelectedTime(generation, selectedDate);
   } finally {
     state.replayAdvancePending = false;
@@ -1079,6 +1605,7 @@ async function playHLS(cameraID, replay, generation, selectedDate) {
     requestedTimestamp,
     recordings,
     inpointOffset,
+    shouldPlay,
   } = replay;
   const existing = state.replaySessions.get(cameraID);
   const canReuse = existing?.source === source &&
@@ -1095,18 +1622,24 @@ async function playHLS(cameraID, replay, generation, selectedDate) {
     requestedTimestamp,
     recordings,
     inpointOffset,
+    shouldPlay,
+    nativeHLS: false,
   });
   const loader = state.replayLoaders.get(cameraID);
   setStreamLoading(loader, true);
   video.hidden = false;
+  video.autoplay = shouldPlay;
+  if (!shouldPlay) video.pause();
   const message = state.replayMessages.get(cameraID);
   if (message) message.hidden = true;
 
   if (canReuse) {
+    state.hlsByCamera.get(cameraID)?.startLoad?.(startPosition);
     seekReplayVideo(cameraID, video, startPosition, generation, selectedDate);
     return;
   }
   if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    state.replaySessions.get(cameraID).nativeHLS = true;
     const onNativeError = () => {
       if (
         state.mode !== "replay" ||
@@ -1120,7 +1653,9 @@ async function playHLS(cameraID, replay, generation, selectedDate) {
     };
     state.replaySessions.get(cameraID).nativeErrorHandler = onNativeError;
     video.addEventListener("error", onNativeError, {once: true});
-    armReplayWatchdog(cameraID, replay, generation, selectedDate);
+    if (shouldPlay) {
+      armReplayWatchdog(cameraID, replay, generation, selectedDate);
+    }
     video.src = source;
     video.load();
     seekReplayVideo(cameraID, video, startPosition, generation, selectedDate);
@@ -1136,7 +1671,9 @@ async function playHLS(cameraID, replay, generation, selectedDate) {
   }
   if (!isCurrentReplay(generation, selectedDate)) return;
   if (window.Hls?.isSupported()) {
-    armReplayWatchdog(cameraID, replay, generation, selectedDate);
+    if (shouldPlay) {
+      armReplayWatchdog(cameraID, replay, generation, selectedDate);
+    }
     const hls = new window.Hls({
       enableWorker: true,
       maxBufferLength: 10,
@@ -1156,7 +1693,11 @@ async function playHLS(cameraID, replay, generation, selectedDate) {
       ) {
         return;
       }
-      video.play().catch(() => {});
+      if (state.replaySessions.get(cameraID)?.shouldPlay !== false) {
+        video.play().catch(() => {});
+      } else {
+        video.pause();
+      }
     });
     hls.on(window.Hls.Events.ERROR, (_, data) => {
       if (
@@ -1186,11 +1727,6 @@ function seekReplayVideo(cameraID, video, startPosition, generation, selectedDat
     ) {
       return;
     }
-    if (video.seekable.length === 0 && attempts < 20) {
-      attempts += 1;
-      setTimeout(apply, 100);
-      return;
-    }
     try {
       let target = startPosition;
       if (video.seekable.length) {
@@ -1204,16 +1740,25 @@ function seekReplayVideo(cameraID, video, startPosition, generation, selectedDat
     } catch {
       // Metadata may still be settling; the next user seek will retry.
     }
-    video.play().catch(() => {
-      if (!isCurrentReplay(generation, selectedDate)) return;
-      setStreamLoading(state.replayLoaders.get(cameraID), false);
-      showReplayMessage(cameraID, "这段录像暂时无法播放");
-    });
+    if (video.seekable.length === 0 && attempts < 20) {
+      attempts += 1;
+      setTimeout(apply, 100);
+      return;
+    }
+    if (state.replaySessions.get(cameraID)?.shouldPlay === false) {
+      video.pause();
+    } else {
+      video.play().catch(() => {
+        if (!isCurrentReplay(generation, selectedDate)) return;
+        setStreamLoading(state.replayLoaders.get(cameraID), false);
+        showReplayMessage(cameraID, "这段录像暂时无法播放");
+      });
+    }
   };
-  if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+  if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
     apply();
   } else {
-    video.addEventListener("loadeddata", apply, {once: true});
+    video.addEventListener("loadedmetadata", apply, {once: true});
   }
 }
 
@@ -1309,11 +1854,19 @@ function stopReplay(cameraID, resetRecovery = true) {
   }
 }
 
-function cancelReplayWork(stopPlayers = true) {
+function cancelReplayWork(stopPlayers = true, abortRecordings = true) {
   state.replayGeneration += 1;
-  state.recordingsAbortController?.abort();
-  state.recordingsAbortController = null;
+  if (abortRecordings) {
+    state.recordingsAbortController?.abort();
+    state.recordingsAbortController = null;
+    timelineViewport.classList.remove("is-disabled", "is-scrubbing");
+    timelineViewport.setAttribute("aria-disabled", "false");
+  }
+  cancelTimelineMotion();
+  state.timelineGesture = null;
   if (stopPlayers) {
+    state.timelineFollowing = true;
+    state.timelineSnapDirection = 0;
     stopReplay();
     state.focusedReplayCamera = null;
     for (const card of replayGrid.querySelectorAll(".camera-card")) {

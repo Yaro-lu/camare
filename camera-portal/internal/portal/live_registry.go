@@ -14,9 +14,13 @@ var (
 	errLiveReplacementTimeout = errors.New("previous live stream did not stop")
 	errReplayDeviceLimit      = errors.New("device replay request limit reached")
 	errReplayGlobalLimit      = errors.New("global replay request limit reached")
+	errReplaySessionLimit     = errors.New("replay session subrequest limit reached")
 )
 
-const liveReplacementTimeout = 5 * time.Second
+const (
+	liveReplacementTimeout                = 5 * time.Second
+	maxConcurrentReplaySessionSubrequests = 8
+)
 
 type liveKey struct {
 	deviceID string
@@ -154,13 +158,20 @@ type concurrencyLimiter struct {
 	mu           sync.Mutex
 	total        int
 	byDevice     map[string]int
+	sessions     map[replaySessionKey]int
 	maxGlobal    int
 	maxPerDevice int
+}
+
+type replaySessionKey struct {
+	deviceID  string
+	sessionID string
 }
 
 func newConcurrencyLimiter(maxGlobal, maxPerDevice int) *concurrencyLimiter {
 	return &concurrencyLimiter{
 		byDevice:     make(map[string]int),
+		sessions:     make(map[replaySessionKey]int),
 		maxGlobal:    maxGlobal,
 		maxPerDevice: maxPerDevice,
 	}
@@ -192,4 +203,59 @@ func (l *concurrencyLimiter) Acquire(deviceID string) (func(), error) {
 			l.mu.Unlock()
 		})
 	}, nil
+}
+
+// AcquireSession counts a group of concurrent HLS requests as one replay slot.
+// A VOD playlist, its initialization file, and its media fragments all belong
+// to the same session, but each HTTP request still has a bounded concurrency
+// within that session.
+func (l *concurrencyLimiter) AcquireSession(deviceID, sessionID string) (func(), error) {
+	l.mu.Lock()
+	key := replaySessionKey{deviceID: deviceID, sessionID: sessionID}
+	if refs := l.sessions[key]; refs > 0 {
+		if refs >= maxConcurrentReplaySessionSubrequests {
+			l.mu.Unlock()
+			return nil, errReplaySessionLimit
+		}
+		l.sessions[key] = refs + 1
+		l.mu.Unlock()
+		return l.releaseSession(key), nil
+	}
+	if l.byDevice[deviceID] >= l.maxPerDevice {
+		l.mu.Unlock()
+		return nil, errReplayDeviceLimit
+	}
+	if l.total >= l.maxGlobal {
+		l.mu.Unlock()
+		return nil, errReplayGlobalLimit
+	}
+	l.total++
+	l.byDevice[deviceID]++
+	l.sessions[key] = 1
+	l.mu.Unlock()
+	return l.releaseSession(key), nil
+}
+
+func (l *concurrencyLimiter) releaseSession(key replaySessionKey) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			l.mu.Lock()
+			refs := l.sessions[key] - 1
+			if refs > 0 {
+				l.sessions[key] = refs
+				l.mu.Unlock()
+				return
+			}
+			delete(l.sessions, key)
+			l.total--
+			count := l.byDevice[key.deviceID] - 1
+			if count > 0 {
+				l.byDevice[key.deviceID] = count
+			} else {
+				delete(l.byDevice, key.deviceID)
+			}
+			l.mu.Unlock()
+		})
+	}
 }

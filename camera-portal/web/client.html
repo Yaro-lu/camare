@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#080b0d">
   <title>实时画面</title>
   <link rel="icon" href="/assets/mark.svg">
-  <link rel="stylesheet" href="/assets/common.css?v=20260730-3">
-  <script type="module" src="/assets/client.js?v=20260730-8"></script>
+  <link rel="stylesheet" href="/assets/common.css?v=20260803-1">
+  <script type="module" src="/assets/client.js?v=20260803-1"></script>
 </head>
 <body class="viewer">
   <main class="viewer-shell">
@@ -35,11 +35,31 @@
           </label>
         </div>
         <div class="timeline-row">
-          <time id="timelineTime">00:00</time>
-          <div class="timeline-shell">
-            <div id="availability" class="availability"></div>
-            <input id="timeline" type="range" min="0" max="86399" step="1" value="0" aria-label="回看时间">
+          <div class="timeline-toolbar">
+            <span>拖动时间尺</span>
+            <div id="timelineLegend" class="timeline-legend" aria-hidden="true"></div>
           </div>
+          <div
+            id="timelineViewport"
+            class="timeline-viewport"
+            role="slider"
+            tabindex="0"
+            aria-label="录像回看时间"
+            aria-valuemin="0"
+            aria-valuemax="86399"
+            aria-valuenow="0"
+            aria-valuetext="00:00:00"
+          >
+            <div id="timelineTrack" class="timeline-track" aria-hidden="true">
+              <div id="timelineRuler" class="timeline-ruler"></div>
+              <div id="availability" class="availability"></div>
+            </div>
+            <div class="timeline-cursor" aria-hidden="true">
+              <time id="timelineTime">00:00:00</time>
+              <i></i>
+            </div>
+          </div>
+          <input id="timeline" class="timeline-value" type="range" min="0" max="86399" step="1" value="0" tabindex="-1" aria-hidden="true">
         </div>
       </div>
     </section>
