@@ -24,20 +24,37 @@ const testLocalAccessKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123
 
 func newTestApp(t *testing.T, upstreamURL string) (*App, *Store) {
 	t.Helper()
+	return newTestAppWithCameras(t, upstreamURL,
+		[]Camera{{ID: "ptz_view", Name: "云台"}, {ID: "fixed_view", Name: "枪机"}},
+		[]CameraGroup{{
+			ID:        "yard",
+			Name:      "院子",
+			CameraIDs: [2]string{"ptz_view", "fixed_view"},
+		}},
+	)
+}
+
+func newTestAppWithCameras(
+	t *testing.T,
+	upstreamURL string,
+	cameras []Camera,
+	groups []CameraGroup,
+) (*App, *Store) {
+	t.Helper()
 	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"), time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	static := fstest.MapFS{
-		"client.html":       &fstest.MapFile{Data: []byte("client")},
-		"unbound.html":      &fstest.MapFile{Data: []byte("unbound")},
-		"pair.html":         &fstest.MapFile{Data: []byte("pair")},
-		"pair-invalid.html": &fstest.MapFile{Data: []byte("invalid")},
-		"admin.html":        &fstest.MapFile{Data: []byte("admin")},
-		"assets/client.js":  &fstest.MapFile{Data: []byte("export {};")},
+		"client.html":              &fstest.MapFile{Data: []byte("client")},
+		"unbound.html":             &fstest.MapFile{Data: []byte("unbound")},
+		"pair.html":                &fstest.MapFile{Data: []byte("pair")},
+		"pair-invalid.html":        &fstest.MapFile{Data: []byte("invalid")},
+		"admin.html":               &fstest.MapFile{Data: []byte("admin")},
+		"assets/client.js":         &fstest.MapFile{Data: []byte("export {};")},
 		"assets/timeline-core.mjs": &fstest.MapFile{Data: []byte("export {};")},
-		"assets/unbound.js": &fstest.MapFile{Data: []byte("fetch('/api/config');")},
-		"assets/hls.min.js": &fstest.MapFile{Data: []byte("window.Hls = {};")},
+		"assets/unbound.js":        &fstest.MapFile{Data: []byte("fetch('/api/config');")},
+		"assets/hls.min.js":        &fstest.MapFile{Data: []byte("window.Hls = {};")},
 		"assets/jsmpeg-player.min.js": &fstest.MapFile{
 			Data: []byte("window.JSMpeg = {};"),
 		},
@@ -50,7 +67,8 @@ func newTestApp(t *testing.T, upstreamURL string) (*App, *Store) {
 		AdminLogin:     "owner@example.com",
 		FrigateURL:     upstreamURL,
 		Go2RTCURL:      upstreamURL,
-		Cameras:        []Camera{{ID: "ptz_view", Name: "云台"}, {ID: "fixed_view", Name: "枪机"}},
+		Cameras:        cameras,
+		CameraGroups:   groups,
 		MaxLiveStreams: 2,
 	}, store, static, nil)
 	if err != nil {

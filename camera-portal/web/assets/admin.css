@@ -44,6 +44,187 @@ button { cursor: pointer; }
 .summary div:last-child { border: 0; }
 .summary b { display: block; font: 700 26px ui-monospace, monospace; }
 .summary span { color: var(--muted); font-size: 12px; }
+.camera-section {
+  margin: 0 0 48px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(155,239,62,.07), transparent 36%),
+    rgba(255,255,255,.72);
+}
+.camera-section-head, .camera-group-head, .camera-audio-row, .camera-apply-bar {
+  display: flex;
+  align-items: center;
+}
+.camera-section-head { justify-content: space-between; gap: 24px; margin-bottom: 20px; }
+.section-kicker { margin: 0 0 4px; color: #67705e; font: 700 10px ui-monospace, monospace; letter-spacing: .14em; }
+.camera-section-head h2 { margin: 0; font-size: 19px; letter-spacing: -.025em; }
+.camera-section-head p:not(.section-kicker) { max-width: 650px; margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.camera-section-badge {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border: 1px solid #cad0c4;
+  border-radius: 99px;
+  color: #586154;
+  font: 700 10px ui-monospace, monospace;
+  letter-spacing: .06em;
+}
+.camera-groups { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 30px; }
+.camera-empty { width: 100%; margin: 0; }
+.camera-group {
+  flex: 1 1 430px;
+  min-width: min(100%, 390px);
+  max-width: 510px;
+  padding: 14px;
+  border: 1px solid #d8dcd3;
+  border-radius: 13px;
+  background: #fff;
+  box-shadow: 0 5px 20px rgba(31,38,28,.045);
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+.camera-group.has-pending-change { border-color: #9ab679; box-shadow: 0 5px 24px rgba(86,119,50,.11); }
+.camera-group.has-inconsistent-audio { border-color: #c7a65b; box-shadow: 0 5px 24px rgba(139,104,29,.1); }
+.camera-group.no-cameras { background: #f8f9f6; box-shadow: none; }
+.camera-group-head { justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.camera-group-title { min-width: 0; }
+.camera-group-title h3 { overflow: hidden; margin: 0; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.camera-group-title p { margin: 3px 0 0; color: var(--muted); font-size: 10px; }
+.camera-group-state {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border-radius: 99px;
+  background: #eef0eb;
+  color: #70776d;
+  font-size: 10px;
+}
+.camera-group-state.pending { background: #edf8e2; color: #416c1a; }
+.camera-group-state.inconsistent { background: #fff1cf; color: #785d1b; }
+.camera-group-views { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.camera-view {
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  margin: 0;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  background: #171b16;
+  color: #dce2d7;
+}
+.camera-view img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.camera-view-label {
+  position: absolute;
+  left: 7px;
+  bottom: 6px;
+  z-index: 2;
+  max-width: calc(100% - 14px);
+  overflow: hidden;
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: rgba(14,17,13,.72);
+  color: #f4f6f1;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  backdrop-filter: blur(3px);
+}
+.camera-view-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 14px;
+  color: #aeb7aa;
+  font-size: 10px;
+  text-align: center;
+}
+.camera-view-state::before {
+  content: "";
+  width: 18px;
+  height: 18px;
+  margin: 0 auto 7px;
+  display: block;
+  border: 2px solid rgba(255,255,255,.2);
+  border-top-color: var(--signal);
+  border-radius: 50%;
+  animation: camera-snapshot-spin .8s linear infinite;
+}
+.camera-view.loaded .camera-view-state { display: none; }
+.camera-view.failed .camera-view-state::before { content: "!"; height: auto; border: 0; color: #e5b9b4; font: 700 17px ui-monospace, monospace; animation: none; }
+.camera-view.pending-slot {
+  border: 1px dashed #4d554a;
+  background:
+    repeating-linear-gradient(135deg, rgba(255,255,255,.025) 0 8px, transparent 8px 16px),
+    #20251f;
+}
+.camera-view.pending-slot .camera-view-state::before { content: "+"; height: auto; border: 0; color: var(--signal); font: 400 22px ui-monospace, monospace; animation: none; }
+.camera-audio-row {
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid #e7e9e3;
+}
+.camera-audio-copy strong { display: block; font-size: 12px; }
+.camera-audio-copy span { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+.audio-switch { position: relative; flex: 0 0 42px; width: 42px; height: 24px; }
+.audio-switch input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.audio-switch-track {
+  position: absolute;
+  inset: 0;
+  border: 1px solid #c9cec5;
+  border-radius: 99px;
+  background: #dfe2dc;
+  transition: .18s ease;
+}
+.audio-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(24,30,21,.22);
+  transition: transform .18s ease;
+}
+.audio-switch input:checked + .audio-switch-track { border-color: #42651f; background: #537f29; }
+.audio-switch input:checked + .audio-switch-track::after { transform: translateX(18px); }
+.audio-switch input:indeterminate + .audio-switch-track { border-color: #9d7c2d; background: #c9a953; }
+.audio-switch input:indeterminate + .audio-switch-track::after { transform: translateX(9px); }
+.audio-switch input:focus-visible + .audio-switch-track { outline: 3px solid rgba(84,128,41,.25); outline-offset: 2px; }
+.audio-switch input:disabled + .audio-switch-track { opacity: .55; cursor: wait; }
+.camera-group.no-cameras .audio-switch input:disabled + .audio-switch-track { cursor: not-allowed; }
+.camera-apply-bar {
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+.camera-apply-copy strong { font-size: 13px; }
+.camera-apply-copy p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.camera-apply-status[data-tone="pending"] { color: #547a2c; }
+.camera-apply-status[data-tone="progress"] { color: #80671e; }
+.camera-apply-status[data-tone="error"] { color: var(--danger); }
+.camera-apply-status[data-tone="success"] { color: #3d7018; }
+.apply-restart-button {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 138px;
+  height: 42px;
+  padding: 0 16px;
+  border: 1px solid #1c2417;
+  border-radius: 10px;
+  background: #1c2417;
+  color: #f8fbf4;
+  font-weight: 700;
+}
+.apply-restart-button:not(:disabled)::before { content: "↻"; margin-right: 7px; color: var(--signal); font-size: 16px; }
+.apply-restart-button:disabled { cursor: not-allowed; border-color: #c9cec5; background: #dfe2dc; color: #8a9087; }
+.apply-restart-button.applying::before { content: ""; width: 12px; height: 12px; display: inline-block; margin-right: 8px; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%; vertical-align: -2px; animation: camera-snapshot-spin .8s linear infinite; }
+@keyframes camera-snapshot-spin { to { transform: rotate(360deg); } }
 .section-head { justify-content: space-between; margin-bottom: 12px; }
 .section-head h2 { margin: 0; font-size: 17px; }
 .text-button, .danger-button {
@@ -156,6 +337,14 @@ dialog input, dialog select {
   .create-button { padding: 0 12px; font-size: 12px; }
   .summary { margin: 26px 0 34px; }
   .summary div { padding: 15px 12px; }
+  .camera-section { margin-bottom: 34px; padding: 15px; }
+  .camera-section-head { align-items: flex-start; gap: 12px; }
+  .camera-section-badge { margin-top: 2px; }
+  .camera-groups { gap: 18px; }
+  .camera-group { flex-basis: 100%; min-width: 0; max-width: none; padding: 10px; }
+  .camera-group-views { gap: 6px; }
+  .camera-apply-bar { align-items: stretch; flex-direction: column; gap: 14px; }
+  .apply-restart-button { width: 100%; }
   .device-card { align-items: flex-start; flex-wrap: wrap; }
   .device-icon { flex-basis: 42px; height: 42px; }
   .device-main { width: calc(100% - 60px); }

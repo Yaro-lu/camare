@@ -194,6 +194,64 @@ body.viewer {
 
 .replay-card video[hidden] ~ .player-toggle { display: none; }
 
+.replay-audio-toggle {
+  position: absolute;
+  z-index: 4;
+  right: 50px;
+  bottom: 11px;
+  width: 28px;
+  height: 28px;
+  display: none;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 999px;
+  color: #f3f5ef;
+  background: rgba(8, 11, 13, .58);
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.replay-card.focused .replay-audio-toggle,
+.replay-card:fullscreen .replay-audio-toggle {
+  display: grid;
+}
+
+.replay-card:-webkit-full-screen .replay-audio-toggle {
+  display: grid;
+}
+
+.replay-card video[hidden] ~ .replay-audio-toggle { display: none; }
+
+.replay-audio-toggle::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  clip-path: polygon(0 36%, 30% 36%, 68% 5%, 68% 95%, 30% 64%, 0 64%);
+}
+
+.replay-audio-toggle::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+  transform: rotate(-45deg);
+}
+
+.replay-audio-toggle.audible::after {
+  width: 5px;
+  height: 10px;
+  right: 5px;
+  border-right: 1.5px solid currentColor;
+  border-radius: 0 999px 999px 0;
+  background: transparent;
+  transform: none;
+}
+
 .camera-card.focused {
   position: fixed;
   inset: 0;

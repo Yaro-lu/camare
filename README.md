@@ -13,6 +13,8 @@
 - 默认同时显示两路画面，单击任一路进入全屏。
 - 直播和回放都支持双画面；切到回放会停止直播，全屏时停止另一条回放。
 - 回放默认跳到约十五分钟前，拖动到录像空档时吸附到最近有录像的位置。
+- 管理页按摄像头组显示一次性低清快照，可统一决定各组的新录像是否保留声音。
+- 双画面回放默认静音；含音轨的录像可在单画面全屏后手动开启当前一路声音。
 - 录像只有一份，Portal 不复制录像文件。
 - 管理页只通过 Tailscale Serve 访问，用于生成二维码、查看、重命名和撤销设备。
 
@@ -361,6 +363,7 @@ ADMIN_TAILSCALE_LOGIN=you@example.com
 
 RECORDING_TIMEZONE=Asia/Shanghai
 CAMERAS=ptz_view=云台画面,fixed_view=枪机画面
+CAMERA_GROUPS=yard=院子:ptz_view|fixed_view;front=门前:|
 
 PUBLIC_LOOPBACK_PORT=9080
 ADMIN_LOOPBACK_PORT=9081
@@ -375,6 +378,7 @@ PORTAL_INGRESS_NETWORK=camera_portal_tunnel
 - `LOCAL_BASE_URL` 必须和 LAN 编排的 IP、端口完全一致。
 - `ADMIN_ORIGIN` 必须和 Tailscale Serve 的地址完全一致。
 - Frigate 摄像头 ID 必须和 `CAMERAS` 左侧名称一致。
+- `CAMERA_GROUPS` 只控制 Tailscale 管理页的分组和组级录音设置。每组固定两个槽，空槽保留为“待接入”；非空 ID 必须已经存在于 `CAMERAS`。
 
 启动：
 

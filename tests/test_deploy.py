@@ -202,6 +202,10 @@ class ConfigurationTests(unittest.TestCase):
             self.assertNotIn("must-not-stay-in-env", all_env)
             self.assertIn("CUSTOM_SETTING=keep-me", all_env)
             self.assertEqual(
+                deploy.parse_env_file(paths["PORTAL_ENV"])["CAMERA_GROUPS"],
+                "yard=院子:ptz_view|fixed_view;front=门前:|",
+            )
+            self.assertEqual(
                 paths["CAMERA_PASSWORD_FILE"].read_text(encoding="utf-8"),
                 "p%40ss%3Aword",
             )

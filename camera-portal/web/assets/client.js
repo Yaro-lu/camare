@@ -6,6 +6,61 @@ import {
   splitTimeRange,
 } from "./timeline-core.mjs?v=20260810-1";
 
+export function createReplayAudioController({
+  players,
+  isEligible,
+  onChange = () => {},
+}) {
+  let audibleCameraID = null;
+
+  const silencePlayers = () => {
+    for (const player of players.values()) {
+      if (player) player.muted = true;
+    }
+    audibleCameraID = null;
+  };
+  const notify = () => onChange(audibleCameraID);
+
+  return {
+    get audibleCameraID() {
+      return audibleCameraID;
+    },
+    toggle(cameraID) {
+      const player = players.get(cameraID);
+      const shouldEnable = Boolean(
+        player &&
+        isEligible(cameraID) &&
+        (audibleCameraID !== cameraID || player.muted),
+      );
+      silencePlayers();
+      if (shouldEnable) {
+        player.muted = false;
+        audibleCameraID = cameraID;
+      }
+      notify();
+      return shouldEnable;
+    },
+    muteAll() {
+      silencePlayers();
+      notify();
+    },
+    reconcile() {
+      const player = audibleCameraID ? players.get(audibleCameraID) : null;
+      if (!player || player.muted || !isEligible(audibleCameraID)) {
+        silencePlayers();
+        notify();
+        return;
+      }
+      for (const [cameraID, candidate] of players) {
+        if (cameraID !== audibleCameraID && candidate) candidate.muted = true;
+      }
+      notify();
+    },
+  };
+}
+
+const hasBrowserDOM = typeof window !== "undefined" && typeof document !== "undefined";
+
 const state = {
   cameras: [],
   mode: "live",
@@ -13,6 +68,7 @@ const state = {
   replayPlayers: new Map(),
   replayMessages: new Map(),
   replayLoaders: new Map(),
+  replayAudioButtons: new Map(),
   hlsByCamera: new Map(),
   replaySessions: new Map(),
   replayWatchdogs: new Map(),
@@ -58,52 +114,62 @@ const LIVE_STALL_TIMEOUT_MS = 8000;
 const REPLAY_FIRST_FRAME_TIMEOUT_MS = 10000;
 const MAX_STREAM_RECOVERY_ATTEMPTS = 3;
 
-const liveView = document.querySelector("#liveView");
-const replayView = document.querySelector("#replayView");
-const replayGrid = document.querySelector("#replayGrid");
-const replayDate = document.querySelector("#replayDate");
-const replayTime = document.querySelector("#replayTime");
-const timeline = document.querySelector("#timeline");
-const timelineTime = document.querySelector("#timelineTime");
-const availability = document.querySelector("#availability");
-const timelineViewport = document.querySelector("#timelineViewport");
-const timelineTrack = document.querySelector("#timelineTrack");
-const timelineRuler = document.querySelector("#timelineRuler");
-const timelineLegend = document.querySelector("#timelineLegend");
-const statusText = document.querySelector("#statusText");
-const toast = document.querySelector("#toast");
-const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
+const liveView = hasBrowserDOM ? document.querySelector("#liveView") : null;
+const replayView = hasBrowserDOM ? document.querySelector("#replayView") : null;
+const replayGrid = hasBrowserDOM ? document.querySelector("#replayGrid") : null;
+const replayDate = hasBrowserDOM ? document.querySelector("#replayDate") : null;
+const replayTime = hasBrowserDOM ? document.querySelector("#replayTime") : null;
+const timeline = hasBrowserDOM ? document.querySelector("#timeline") : null;
+const timelineTime = hasBrowserDOM ? document.querySelector("#timelineTime") : null;
+const availability = hasBrowserDOM ? document.querySelector("#availability") : null;
+const timelineViewport = hasBrowserDOM ? document.querySelector("#timelineViewport") : null;
+const timelineTrack = hasBrowserDOM ? document.querySelector("#timelineTrack") : null;
+const timelineRuler = hasBrowserDOM ? document.querySelector("#timelineRuler") : null;
+const timelineLegend = hasBrowserDOM ? document.querySelector("#timelineLegend") : null;
+const statusText = hasBrowserDOM ? document.querySelector("#statusText") : null;
+const toast = hasBrowserDOM ? document.querySelector("#toast") : null;
+const isIOS = hasBrowserDOM && (/iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
+const prefersReducedMotion = hasBrowserDOM &&
+  (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false);
 let hlsLibraryPromise;
 let jsmpegLibraryPromise;
 let videoRTCModulePromise;
 
-window.addEventListener("pagehide", () => {
-  suspendCurrentPlayback();
-});
-window.addEventListener("pageshow", (event) => {
-  if (event.persisted) {
-    resumeCurrentPlayback();
-  }
-});
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) {
-    suspendCurrentPlayback();
-    return;
-  }
-  resumeCurrentPlayback();
-});
-document.addEventListener("fullscreenchange", () => {
-  if (!document.fullscreenElement) {
-    restoreReplayGrid().catch((error) => handlePlaybackError(error, "双画面恢复失败"));
-  }
+const replayAudio = createReplayAudioController({
+  players: state.replayPlayers,
+  isEligible: (cameraID) => isReplayAudioEligible(cameraID),
+  onChange: () => syncReplayAudioButtons(),
 });
 
-start().catch((error) => {
-  statusText.textContent = "连接失败";
-  showToast(error.message || "视频服务暂时不可用");
-});
+if (hasBrowserDOM) {
+  window.addEventListener("pagehide", () => {
+    suspendCurrentPlayback();
+  });
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) {
+      resumeCurrentPlayback();
+    }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      suspendCurrentPlayback();
+      return;
+    }
+    resumeCurrentPlayback();
+  });
+  document.addEventListener("fullscreenchange", () => {
+    replayAudio.reconcile();
+    if (!document.fullscreenElement) {
+      restoreReplayGrid().catch((error) => handlePlaybackError(error, "双画面恢复失败"));
+    }
+  });
+
+  start().catch((error) => {
+    statusText.textContent = "连接失败";
+    showToast(error.message || "视频服务暂时不可用");
+  });
+}
 
 async function start() {
   const response = await fetch("/api/config", {credentials: "same-origin"});
@@ -239,6 +305,7 @@ function buildReplayView() {
   state.replayPlayers.clear();
   state.replayMessages.clear();
   state.replayLoaders.clear();
+  state.replayAudioButtons.clear();
   state.replaySessions.clear();
   state.focusedReplayCamera = null;
   for (const camera of state.cameras) {
@@ -283,10 +350,12 @@ function buildReplayView() {
         }
       }
     });
+    addReplayAudioToggle(card, camera.id, video);
     state.replayPlayers.set(camera.id, video);
     state.replayMessages.set(camera.id, empty);
     state.replayLoaders.set(camera.id, loader);
     video.addEventListener("webkitendfullscreen", () => {
+      replayAudio.muteAll();
       restoreReplayGrid(camera.id).catch((error) => handlePlaybackError(error, "双画面恢复失败"));
     });
     video.addEventListener("ended", () => {
@@ -655,7 +724,13 @@ function addPlaybackToggle(card, getVideo, onUserToggle = null) {
     if (!current) return;
     if (current.paused || current.ended) {
       onUserToggle?.(false);
-      current.muted = true;
+      if (
+        state.mode !== "replay" ||
+        replayAudio.audibleCameraID !== card.dataset.camera ||
+        !isReplayAudioEligible(card.dataset.camera)
+      ) {
+        current.muted = true;
+      }
       current.play().catch(() => showToast("视频暂时无法播放"));
     } else {
       onUserToggle?.(true);
@@ -664,6 +739,44 @@ function addPlaybackToggle(card, getVideo, onUserToggle = null) {
   });
   card.append(button);
   sync();
+}
+
+function addReplayAudioToggle(card, cameraID, video) {
+  const button = document.createElement("button");
+  button.className = "replay-audio-toggle";
+  button.type = "button";
+  button.setAttribute("aria-label", "开启声音");
+  button.setAttribute("aria-pressed", "false");
+  button.title = "开启声音";
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    replayAudio.toggle(cameraID);
+  });
+  video.addEventListener("volumechange", () => replayAudio.reconcile());
+  state.replayAudioButtons.set(cameraID, button);
+  card.append(button);
+}
+
+function syncReplayAudioButtons() {
+  for (const [cameraID, button] of state.replayAudioButtons) {
+    const video = state.replayPlayers.get(cameraID);
+    const audible = replayAudio.audibleCameraID === cameraID && video && !video.muted;
+    button.classList.toggle("audible", Boolean(audible));
+    button.setAttribute("aria-pressed", audible ? "true" : "false");
+    button.setAttribute("aria-label", audible ? "关闭声音" : "开启声音");
+    button.title = audible ? "关闭声音" : "开启声音";
+  }
+}
+
+function isReplayAudioEligible(cameraID) {
+  if (state.mode !== "replay" || state.focusedReplayCamera !== cameraID) return false;
+  const card = replayGrid?.querySelector(`[data-camera="${CSS.escape(cameraID)}"]`);
+  return Boolean(
+    card &&
+    (card.classList.contains("focused") ||
+      document.fullscreenElement === card ||
+      document.webkitFullscreenElement === card),
+  );
 }
 
 function bindFullscreen(card, player) {
@@ -682,10 +795,13 @@ function bindFullscreen(card, player) {
 function enterFullscreen(card, player) {
   const video = player.video || card.querySelector("video");
   const cameraID = card.dataset.camera;
+  if (state.mode === "replay") replayAudio.muteAll();
   const replayFocused = state.mode === "replay" && focusReplayCamera(cameraID);
   const useFocusedFallback = () => {
-    card.classList.toggle("focused");
-    if (!card.classList.contains("focused") && replayFocused) {
+    const focused = card.classList.toggle("focused");
+    if (focused && state.mode === "replay") lockLandscape();
+    replayAudio.reconcile();
+    if (!focused && replayFocused) {
       restoreReplayGrid(cameraID).catch((error) => handlePlaybackError(error, "双画面恢复失败"));
     }
   };
@@ -696,7 +812,18 @@ function enterFullscreen(card, player) {
         video.play().catch(() => {});
       }
     }
-    if (video?.webkitEnterFullscreen) {
+    if (state.mode === "replay") {
+      if (card.requestFullscreen) {
+        card.requestFullscreen()
+          .then(() => {
+            replayAudio.reconcile();
+            lockLandscape();
+          })
+          .catch(useFocusedFallback);
+      } else {
+        useFocusedFallback();
+      }
+    } else if (video?.webkitEnterFullscreen) {
       video.webkitEnterFullscreen();
       lockLandscape();
     } else if (card.requestFullscreen) {
@@ -712,6 +839,7 @@ function enterFullscreen(card, player) {
 }
 
 function focusReplayCamera(cameraID) {
+  replayAudio.muteAll();
   if (
     state.mode !== "replay" ||
     !cameraID ||
@@ -731,6 +859,7 @@ function focusReplayCamera(cameraID) {
 }
 
 async function restoreReplayGrid(cameraID) {
+  replayAudio.muteAll();
   const focusedID = state.focusedReplayCamera;
   if (!focusedID || (cameraID && cameraID !== focusedID)) return;
 
@@ -760,6 +889,7 @@ function bindControls() {
     });
   }
   replayDate.addEventListener("change", () => {
+    replayAudio.muteAll();
     cancelTimelineMotion();
     const seconds = parseTimeInput(replayTime.value) ?? 0;
     const dayStart = recordingDayStartEpoch(replayDate.value);
@@ -793,6 +923,7 @@ function bindControls() {
 
 async function switchMode(mode) {
   if (state.mode === mode) return;
+  replayAudio.muteAll();
   state.mode = mode;
   state.suspended = false;
   for (const button of document.querySelectorAll(".mode-switch button")) {
@@ -862,6 +993,9 @@ async function loadRecordings() {
 
 function preparePlaybackRecordings(timestamp) {
   const selectedDate = formatRecordingDate(recordingDateParts(timestamp * 1000));
+  if (state.recordingsDate && state.recordingsDate !== selectedDate) {
+    replayAudio.muteAll();
+  }
   const dayStart = recordingDayStartEpoch(selectedDate);
   const dayEnd = dayStart + DAY_SECONDS;
   const entries = state.cameras.map((camera) => {
@@ -2015,12 +2149,14 @@ function stopReplay(cameraID, resetRecovery = true) {
     }
     state.replaySessions.delete(id);
     if (!video) continue;
+    video.muted = true;
     video.pause();
     video.removeAttribute("src");
     video.load();
     video.hidden = true;
     setStreamLoading(state.replayLoaders.get(id), false);
   }
+  replayAudio.reconcile();
 }
 
 function cancelReplayWork(stopPlayers = true, abortRecordings = true) {

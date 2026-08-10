@@ -12,8 +12,8 @@ func TestClientPageUsesVersionedFirstPartyAssets(t *testing.T) {
 	}
 	html := string(data)
 	for _, asset := range []string{
-		"/assets/common.css?v=20260803-1",
-		"/assets/client.js?v=20260810-1",
+		"/assets/common.css?v=20260810-3",
+		"/assets/client.js?v=20260810-3",
 	} {
 		if !strings.Contains(html, asset) {
 			t.Fatalf("client.html missing versioned asset %q", asset)
@@ -262,8 +262,8 @@ func TestAdminPageSeparatesActiveDevicesAndCollapsedHistory(t *testing.T) {
 		`<details id="historyPanel" class="history-panel">`,
 		`id="historyList"`,
 		`id="historyCount"`,
-		`/assets/admin.css?v=20260730-2`,
-		`/assets/admin.js?v=20260730-3`,
+		`/assets/admin.css?v=20260810-2`,
+		`/assets/admin.js?v=20260810-2`,
 	} {
 		if !strings.Contains(html, content) {
 			t.Fatalf("admin.html missing %q", content)

@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#f3f4ef">
   <title>观看设备管理</title>
   <link rel="icon" href="/assets/mark.svg">
-  <link rel="stylesheet" href="/assets/admin.css?v=20260730-2">
-  <script src="/assets/admin.js?v=20260730-3" defer></script>
+  <link rel="stylesheet" href="/assets/admin.css?v=20260810-2">
+  <script src="/assets/admin.js?v=20260810-2" defer></script>
 </head>
 <body>
   <main class="admin-shell">
@@ -26,6 +26,37 @@
       <div><b id="activeCount">—</b><span>未撤销设备</span></div>
       <div><b id="revokedCount">—</b><span>已撤销</span></div>
       <div><b id="pendingCount">—</b><span>待绑定二维码</span></div>
+    </section>
+
+    <section id="cameraSection" class="camera-section" aria-labelledby="cameraHeading">
+      <div class="camera-section-head">
+        <div>
+          <p class="section-kicker">FRIGATE · RECORDING</p>
+          <h2 id="cameraHeading">摄像头与录像声音</h2>
+          <p>快照仅在打开本页时获取一次；录音设置在确认应用前不会影响正在录像。</p>
+        </div>
+        <span class="camera-section-badge">服务器设置</span>
+      </div>
+
+      <div id="cameraGroups" class="camera-groups" aria-live="polite" aria-busy="true">
+        <p class="empty camera-empty">正在读取摄像头…</p>
+      </div>
+
+      <div class="camera-apply-bar">
+        <div class="camera-apply-copy">
+          <strong>统一应用录音设置</strong>
+          <p id="cameraApplyStatus" class="camera-apply-status" role="status" aria-live="polite">
+            调整滑块后，在这里一次性应用所有变化。
+          </p>
+        </div>
+        <button
+          id="applyCameraAudio"
+          class="apply-restart-button"
+          type="button"
+          aria-describedby="cameraApplyStatus"
+          disabled
+        >应用并重启</button>
+      </div>
     </section>
 
     <section class="device-section">

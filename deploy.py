@@ -876,6 +876,10 @@ def build_env_mappings(
             "CAMERAS": (
                 f"ptz_view={config.ptz_name},fixed_view={config.fixed_name}"
             ),
+            "CAMERA_GROUPS": portal_mapping.get(
+                "CAMERA_GROUPS",
+                "yard=院子:ptz_view|fixed_view;front=门前:|",
+            ),
             "PUBLIC_LOOPBACK_PORT": str(config.public_loopback_port),
             "ADMIN_LOOPBACK_PORT": str(config.admin_loopback_port),
             "FRIGATE_DOCKER_NETWORK": config.frigate_network,

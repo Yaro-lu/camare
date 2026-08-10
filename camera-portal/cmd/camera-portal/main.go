@@ -32,6 +32,15 @@ func main() {
 		logger.Error("open state", "error", err)
 		os.Exit(1)
 	}
+	cameras := parseCameras(env("CAMERAS", "ptz_view=云台画面,fixed_view=枪机画面"))
+	cameraGroups, err := portal.ParseCameraGroups(
+		env("CAMERA_GROUPS", "yard=院子:ptz_view|fixed_view;front=门前:|"),
+		cameras,
+	)
+	if err != nil {
+		logger.Error("configure camera groups", "error", err)
+		os.Exit(1)
+	}
 	config := portal.Config{
 		PublicBaseURL:              os.Getenv("PUBLIC_BASE_URL"),
 		LocalBaseURL:               os.Getenv("LOCAL_BASE_URL"),
@@ -41,7 +50,8 @@ func main() {
 		FrigateURL:                 env("FRIGATE_URL", "http://frigate:5000"),
 		Go2RTCURL:                  env("GO2RTC_URL", "http://frigate:1984"),
 		RecordingTimezone:          env("RECORDING_TIMEZONE", "Asia/Shanghai"),
-		Cameras:                    parseCameras(env("CAMERAS", "ptz_view=云台画面,fixed_view=枪机画面")),
+		Cameras:                    cameras,
+		CameraGroups:               cameraGroups,
 		MaxLiveStreams:             envInt("MAX_LIVE_STREAMS", 8),
 		MaxLiveStreamsPerDevice:    envInt("MAX_DEVICE_LIVE_STREAMS", 2),
 		LiveLease:                  envDuration("LIVE_LEASE", 15*time.Minute),

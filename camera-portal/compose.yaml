@@ -42,6 +42,7 @@ services:
       GO2RTC_URL: "http://frigate:1984"
       RECORDING_TIMEZONE: "${RECORDING_TIMEZONE:-Asia/Shanghai}"
       CAMERAS: "${CAMERAS:-ptz_view=云台画面,fixed_view=枪机画面}"
+      CAMERA_GROUPS: "${CAMERA_GROUPS:-yard=院子:ptz_view|fixed_view;front=门前:|}"
       MAX_LIVE_STREAMS: "8"
       MAX_DEVICE_LIVE_STREAMS: "2"
       LIVE_LEASE: "15m"

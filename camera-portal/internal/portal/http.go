@@ -43,6 +43,7 @@ type Config struct {
 	Go2RTCURL                  string
 	RecordingTimezone          string
 	Cameras                    []Camera
+	CameraGroups               []CameraGroup
 	MaxLiveStreams             int
 	MaxLiveStreamsPerDevice    int
 	LiveLease                  time.Duration
@@ -67,6 +68,7 @@ type App struct {
 	localHost      string
 	localAccessKey string
 	adminOrigin    string
+	cameraControl  *cameraControl
 }
 
 type contextKey string
@@ -128,6 +130,13 @@ func NewApp(config Config, store *Store, static fs.FS, logger *slog.Logger) (*Ap
 		}
 		cameraByID[camera.ID] = camera
 	}
+	allowedCameras := make(map[string]struct{}, len(cameraByID))
+	for cameraID := range cameraByID {
+		allowedCameras[cameraID] = struct{}{}
+	}
+	if err := validateCameraGroups(config.CameraGroups, allowedCameras); err != nil {
+		return nil, fmt.Errorf("invalid CAMERA_GROUPS: %w", err)
+	}
 	if config.MaxLiveStreams <= 0 {
 		config.MaxLiveStreams = 8
 	}
@@ -150,7 +159,7 @@ func NewApp(config Config, store *Store, static fs.FS, logger *slog.Logger) (*Ap
 	if err != nil {
 		return nil, fmt.Errorf("invalid RECORDING_TIMEZONE: %w", err)
 	}
-	return &App{
+	app := &App{
 		config:         config,
 		store:          store,
 		static:         static,
@@ -167,7 +176,9 @@ func NewApp(config Config, store *Store, static fs.FS, logger *slog.Logger) (*Ap
 		localHost:      strings.TrimPrefix(localOrigin, "http://"),
 		localAccessKey: localAccessKey,
 		adminOrigin:    adminURL.Scheme + "://" + adminURL.Host,
-	}, nil
+	}
+	app.cameraControl = newCameraControl(frigateURL, cameraByID, config.CameraGroups)
+	return app, nil
 }
 
 func (a *App) PublicHandler() http.Handler {
@@ -204,6 +215,9 @@ func (a *App) AdminHandler() http.Handler {
 	protected.HandleFunc("GET /assets/mark.svg", a.staticFile("assets/mark.svg"))
 	protected.HandleFunc("GET /api/devices", a.listDevices)
 	protected.HandleFunc("GET /api/pairings", a.listPairings)
+	protected.HandleFunc("GET /api/camera-groups", a.listCameraGroups)
+	protected.HandleFunc("GET /api/cameras/{id}/snapshot", a.cameraSnapshot)
+	protected.Handle("PUT /api/camera-groups/record-audio", a.requireAdminMutation(http.HandlerFunc(a.setCameraGroupsRecordAudio)))
 	protected.Handle("POST /api/pairings", a.requireAdminMutation(http.HandlerFunc(a.createPairing)))
 	protected.Handle("PATCH /api/devices/{id}", a.requireAdminMutation(http.HandlerFunc(a.renameDevice)))
 	protected.Handle("DELETE /api/devices/{id}", a.requireAdminMutation(http.HandlerFunc(a.revokeDevice)))
