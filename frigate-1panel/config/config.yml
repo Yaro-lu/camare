@@ -28,6 +28,9 @@ birdseye:
 
 detect:
   enabled: false
+  width: 640
+  height: 360
+  fps: 1
 
 motion:
   enabled: false
