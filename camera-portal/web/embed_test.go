@@ -13,7 +13,7 @@ func TestClientPageUsesVersionedFirstPartyAssets(t *testing.T) {
 	html := string(data)
 	for _, asset := range []string{
 		"/assets/common.css?v=20260803-1",
-		"/assets/client.js?v=20260803-1",
+		"/assets/client.js?v=20260810-1",
 	} {
 		if !strings.Contains(html, asset) {
 			t.Fatalf("client.html missing versioned asset %q", asset)
@@ -46,6 +46,10 @@ func TestReplayTimelineUsesFixedCenterScrubber(t *testing.T) {
 	script := string(scriptData)
 	for _, content := range []string{
 		`TIMELINE_VISIBLE_SECONDS = 2 * 60 * 60`,
+		`TIMELINE_HISTORY_SECONDS = 14 * DAY_SECONDS`,
+		`splitTimeRange(`,
+		`state.timelineSelectedTimestamp`,
+		`preparePlaybackRecordings(`,
 		`bindTimelinePointerControls()`,
 		`startTimelineInertia(`,
 		`settleTimelineSelection(`,

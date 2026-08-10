@@ -177,6 +177,7 @@ func (a *App) PublicHandler() http.Handler {
 	mux.HandleFunc("POST /api/pair/redeem", a.redeemPairing)
 	mux.HandleFunc("GET /assets/common.css", a.staticFile("assets/common.css"))
 	mux.HandleFunc("GET /assets/client.js", a.staticFile("assets/client.js"))
+	mux.HandleFunc("GET /assets/timeline-core.mjs", a.staticFile("assets/timeline-core.mjs"))
 	mux.HandleFunc("GET /assets/pair.js", a.staticFile("assets/pair.js"))
 	mux.HandleFunc("GET /assets/unbound.js", a.staticFile("assets/unbound.js"))
 	mux.HandleFunc("GET /assets/hls.min.js", a.staticFile("assets/hls.min.js"))
@@ -653,6 +654,9 @@ func (a *App) staticFile(name string) http.HandlerFunc {
 			return
 		}
 		contentType := mime.TypeByExtension(path.Ext(name))
+		if path.Ext(name) == ".mjs" {
+			contentType = "text/javascript; charset=utf-8"
+		}
 		if contentType != "" {
 			w.Header().Set("Content-Type", contentType)
 		}

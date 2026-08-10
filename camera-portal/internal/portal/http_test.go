@@ -35,6 +35,7 @@ func newTestApp(t *testing.T, upstreamURL string) (*App, *Store) {
 		"pair-invalid.html": &fstest.MapFile{Data: []byte("invalid")},
 		"admin.html":        &fstest.MapFile{Data: []byte("admin")},
 		"assets/client.js":  &fstest.MapFile{Data: []byte("export {};")},
+		"assets/timeline-core.mjs": &fstest.MapFile{Data: []byte("export {};")},
 		"assets/unbound.js": &fstest.MapFile{Data: []byte("fetch('/api/config');")},
 		"assets/hls.min.js": &fstest.MapFile{Data: []byte("window.Hls = {};")},
 		"assets/jsmpeg-player.min.js": &fstest.MapFile{
@@ -885,6 +886,19 @@ func TestPlaybackLibraryIsSelfHostedWithJavascriptContentType(t *testing.T) {
 	}
 	if got := response.Header().Get("Cloudflare-CDN-Cache-Control"); got != "no-store" {
 		t.Fatalf("client.js Cloudflare-CDN-Cache-Control = %q, want no-store", got)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/assets/timeline-core.mjs?v=20260810-1", nil)
+	response = httptest.NewRecorder()
+	app.PublicHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("timeline-core.mjs status = %d", response.Code)
+	}
+	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "javascript") {
+		t.Fatalf("timeline-core.mjs content type = %q", contentType)
+	}
+	if got := response.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("timeline-core.mjs Cache-Control = %q, want no-store", got)
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/assets/hls.min.js", nil)
