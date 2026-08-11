@@ -1,4 +1,4 @@
-FROM node:22.19.0-alpine3.22@sha256:d2166de198f26e17e5a442f537754dd616ab069c47cc57b889310a717e0abbf9 AS webdeps
+FROM node:26.3.0-alpine3.22@sha256:c7932b9e5e337b0e733d6e16abc1b0e104759e8b05e59ed56586cce967d26dfe AS webdeps
 
 WORKDIR /deps
 COPY package.json package-lock.json ./
