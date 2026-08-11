@@ -5,6 +5,11 @@ import {
   rebaseRollingWindow,
   splitTimeRange,
 } from "./timeline-core.mjs?v=20260810-1";
+import {
+  camerasForGroup,
+  normalizeCameraGroups,
+  transitionCameraGroup,
+} from "./camera-groups.mjs?v=20260811-1";
 
 export function createReplayAudioController({
   players,
@@ -63,6 +68,8 @@ const hasBrowserDOM = typeof window !== "undefined" && typeof document !== "unde
 
 const state = {
   cameras: [],
+  cameraGroups: [],
+  activeCameraGroupID: "",
   mode: "live",
   recordingsByCamera: new Map(),
   replayPlayers: new Map(),
@@ -85,6 +92,7 @@ const state = {
   timelineRecordingsByCamera: new Map(),
   recordingChunkCache: new Map(),
   recordingChunkPromises: new Map(),
+  recordingIndexControllers: new Set(),
   timelineIndexGeneration: 0,
   timelineIndexPromise: null,
   recordingTimezone: "Asia/Shanghai",
@@ -115,6 +123,8 @@ const REPLAY_FIRST_FRAME_TIMEOUT_MS = 10000;
 const MAX_STREAM_RECOVERY_ATTEMPTS = 3;
 
 const liveView = hasBrowserDOM ? document.querySelector("#liveView") : null;
+const viewerShell = hasBrowserDOM ? document.querySelector(".viewer-shell") : null;
+const cameraGroupTabs = hasBrowserDOM ? document.querySelector("#cameraGroupTabs") : null;
 const replayView = hasBrowserDOM ? document.querySelector("#replayView") : null;
 const replayGrid = hasBrowserDOM ? document.querySelector("#replayGrid") : null;
 const replayDate = hasBrowserDOM ? document.querySelector("#replayDate") : null;
@@ -180,17 +190,82 @@ async function start() {
   if (!response.ok) throw new Error("无法读取摄像头");
   const payload = await response.json();
   state.cameras = payload.cameras || [];
+  state.cameraGroups = normalizeCameraGroups(state.cameras, payload.camera_groups);
+  state.activeCameraGroupID = state.cameraGroups[0]?.id || "";
   state.recordingTimezone = payload.recording_timezone || "Asia/Shanghai";
   const recordingOffset = Number(payload.recording_utc_offset_seconds);
   state.recordingUTCOffsetSeconds = Number.isFinite(recordingOffset) ? recordingOffset : 8 * 60 * 60;
   if (!isIOS) {
     await ensureVideoRTC();
   }
+  renderCameraGroupTabs();
   buildLiveView();
   buildReplayView();
   setToday();
   bindControls();
   updateLiveStatus();
+}
+
+function activeCameras() {
+  return camerasForGroup(state.cameras, state.cameraGroups, state.activeCameraGroupID);
+}
+
+function renderCameraGroupTabs() {
+  cameraGroupTabs.replaceChildren();
+  const showTabs = state.cameraGroups.length > 1;
+  cameraGroupTabs.hidden = !showTabs;
+  viewerShell.classList.toggle("has-camera-groups", showTabs);
+  if (!showTabs) return;
+
+  for (const group of state.cameraGroups) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.cameraGroup = group.id;
+    button.textContent = group.name;
+    button.setAttribute("aria-pressed", group.id === state.activeCameraGroupID ? "true" : "false");
+    button.addEventListener("click", () => {
+      switchCameraGroup(group.id).catch((error) => handlePlaybackError(error, "摄像头切换失败"));
+    });
+    cameraGroupTabs.append(button);
+  }
+}
+
+function syncCameraGroupTabs() {
+  for (const button of cameraGroupTabs.querySelectorAll("button")) {
+    button.setAttribute(
+      "aria-pressed",
+      button.dataset.cameraGroup === state.activeCameraGroupID ? "true" : "false",
+    );
+  }
+}
+
+async function switchCameraGroup(nextGroupID) {
+  return transitionCameraGroup({
+    currentGroupID: state.activeCameraGroupID,
+    nextGroupID,
+    groups: state.cameraGroups,
+    stopLive,
+    abortRecordingIndex: () => cancelReplayWork(false, true),
+    stopReplay: () => {
+      cancelReplayWork(true, false);
+      state.replayUserPaused.clear();
+    },
+    muteReplay: () => replayAudio.muteAll(),
+    activate: (groupID) => {
+      state.activeCameraGroupID = groupID;
+      syncCameraGroupTabs();
+    },
+    rebuild: async () => {
+      if (state.mode === "live") {
+        liveView.replaceChildren();
+        buildLiveView();
+        return;
+      }
+      buildReplayView();
+      buildTimelineLegend();
+      await loadRecordings();
+    },
+  });
 }
 
 function buildLiveView() {
@@ -202,7 +277,7 @@ function buildLiveView() {
   state.suspended = false;
   stopLive();
   liveView.replaceChildren();
-  for (const camera of state.cameras) {
+  for (const camera of activeCameras()) {
     createLiveCard(camera);
   }
   updateLiveStatus();
@@ -308,7 +383,7 @@ function buildReplayView() {
   state.replayAudioButtons.clear();
   state.replaySessions.clear();
   state.focusedReplayCamera = null;
-  for (const camera of state.cameras) {
+  for (const camera of activeCameras()) {
     const card = document.createElement("article");
     card.className = "camera-card replay-card";
     card.dataset.camera = camera.id;
@@ -516,7 +591,7 @@ function restartLiveCamera(cameraID, entry) {
     ) {
       return;
     }
-    const camera = state.cameras.find((item) => item.id === cameraID);
+    const camera = activeCameras().find((item) => item.id === cameraID);
     if (!camera) return;
     createLiveCard(camera, entry.card);
     updateLiveStatus();
@@ -526,9 +601,12 @@ function restartLiveCamera(cameraID, entry) {
 function updateLiveStatus() {
   if (state.mode !== "live") return;
   const entries = [...state.livePlayers.values()];
-  if (entries.some((entry) => entry.error || entry.video?.error)) {
+  const expected = activeCameras().length;
+  if (!expected) {
+    statusText.textContent = "暂无摄像头";
+  } else if (entries.some((entry) => entry.error || entry.video?.error)) {
     statusText.textContent = "部分直播异常";
-  } else if (entries.length === state.cameras.length && entries.every((entry) => entry.ready)) {
+  } else if (entries.length === expected && entries.every((entry) => entry.ready)) {
     statusText.textContent = "直播中";
   } else {
     statusText.textContent = "连接中";
@@ -848,7 +926,7 @@ function focusReplayCamera(cameraID) {
     return false;
   }
   state.focusedReplayCamera = cameraID;
-  for (const camera of state.cameras) {
+  for (const camera of activeCameras()) {
     const id = camera.id;
     if (id !== cameraID) {
       stopReplay(id);
@@ -938,6 +1016,8 @@ async function switchMode(mode) {
     cancelReplayWork();
     stopLive();
     liveView.replaceChildren();
+    buildReplayView();
+    buildTimelineLegend();
     setToday();
     await loadRecordings();
   } else {
@@ -961,7 +1041,7 @@ function setToday() {
 }
 
 async function loadRecordings() {
-  if (state.mode !== "replay" || !state.cameras.length || !replayDate.value) return;
+  if (state.mode !== "replay" || !activeCameras().length || !replayDate.value) return;
   const selectedDate = formatRecordingDate(recordingDateParts(state.timelineSelectedTimestamp * 1000));
   const generation = cancelReplayWork();
   state.timelineFollowing = true;
@@ -973,7 +1053,7 @@ async function loadRecordings() {
   state.playableRanges = [];
   state.timelineRanges = [];
   availability.replaceChildren();
-  for (const camera of state.cameras) {
+  for (const camera of activeCameras()) {
     setStreamLoading(state.replayLoaders.get(camera.id), true);
     const message = state.replayMessages.get(camera.id);
     if (message) message.hidden = true;
@@ -982,7 +1062,7 @@ async function loadRecordings() {
   const loaded = await state.timelineIndexPromise;
   if (!loaded || !isCurrentReplay(generation, selectedDate)) return;
   preparePlaybackRecordings(state.timelineSelectedTimestamp);
-  for (const camera of state.cameras) {
+  for (const camera of activeCameras()) {
     const recordings = state.timelineRecordingsByCamera.get(camera.id) || [];
     showReplayMessage(camera.id, recordings.length ? "拖动时间轴开始回看" : "这48小时暂无录像");
   }
@@ -998,7 +1078,7 @@ function preparePlaybackRecordings(timestamp) {
   }
   const dayStart = recordingDayStartEpoch(selectedDate);
   const dayEnd = dayStart + DAY_SECONDS;
-  const entries = state.cameras.map((camera) => {
+  const entries = activeCameras().map((camera) => {
     const recordings = (state.timelineRecordingsByCamera.get(camera.id) || [])
       .filter((item) => Number(item.end_time) > dayStart && Number(item.start_time) < dayEnd);
     return [camera.id, recordings];
@@ -1014,8 +1094,9 @@ async function loadRecordingWindow(windowStart, {blocking = false} = {}) {
   const end = Math.min(start + TIMELINE_WINDOW_SECONDS, Math.floor(Date.now() / 1000) + 1);
   const chunks = splitTimeRange(start, end);
   const indexGeneration = ++state.timelineIndexGeneration;
-  const controller = blocking ? new AbortController() : null;
-  if (controller) {
+  const controller = new AbortController();
+  state.recordingIndexControllers.add(controller);
+  if (blocking) {
     state.recordingsAbortController?.abort();
     state.recordingsAbortController = controller;
     timelineViewport.classList.add("is-disabled");
@@ -1023,9 +1104,9 @@ async function loadRecordingWindow(windowStart, {blocking = false} = {}) {
   }
 
   try {
-    const entries = await Promise.all(state.cameras.map(async (camera) => {
+    const entries = await Promise.all(activeCameras().map(async (camera) => {
       const recordings = (await Promise.all(chunks.map((chunk) =>
-        fetchRecordingChunk(camera.id, chunk, controller?.signal)
+        fetchRecordingChunk(camera.id, chunk, controller.signal)
       ))).flat();
       return [camera.id, recordings];
     }));
@@ -1046,12 +1127,26 @@ async function loadRecordingWindow(windowStart, {blocking = false} = {}) {
     pruneRecordingChunkCache(start);
     return true;
   } finally {
+    state.recordingIndexControllers.delete(controller);
     if (state.recordingsAbortController === controller) {
       state.recordingsAbortController = null;
       timelineViewport.classList.remove("is-disabled");
       timelineViewport.setAttribute("aria-disabled", "false");
     }
   }
+}
+
+function abortRecordingIndexes() {
+  state.timelineIndexGeneration += 1;
+  for (const controller of state.recordingIndexControllers) {
+    controller.abort();
+  }
+  state.recordingIndexControllers.clear();
+  state.recordingChunkPromises.clear();
+  state.recordingsAbortController = null;
+  state.timelineIndexPromise = null;
+  timelineViewport.classList.remove("is-disabled", "is-scrubbing");
+  timelineViewport.setAttribute("aria-disabled", "false");
 }
 
 async function fetchRecordingChunk(cameraID, chunk, signal) {
@@ -1118,7 +1213,7 @@ async function ensureRecordingWindowLoaded() {
 
 function renderAvailability(windowStart = state.timelineWindowStart) {
   availability.replaceChildren();
-  for (const camera of state.cameras) {
+  for (const camera of activeCameras()) {
     const lane = document.createElement("div");
     lane.className = "availability-lane";
     lane.setAttribute("aria-label", `${camera.name}录像`);
@@ -1140,7 +1235,7 @@ function renderAvailability(windowStart = state.timelineWindowStart) {
 
 function calculateTimelineRanges(recordingsByCamera = state.timelineRecordingsByCamera) {
   const recordings = [];
-  for (const camera of state.cameras) {
+  for (const camera of activeCameras()) {
     recordings.push(...(recordingsByCamera.get(camera.id) || []));
   }
   return mergeSegments(recordings, 0);
@@ -1148,7 +1243,7 @@ function calculateTimelineRanges(recordingsByCamera = state.timelineRecordingsBy
 
 function calculatePlayableRanges() {
   let common = null;
-  for (const camera of state.cameras) {
+  for (const camera of activeCameras()) {
     const recordings = state.recordingsByCamera.get(camera.id) || [];
     const ranges = mergeSegments(recordings);
     if (!ranges.length) return [];
@@ -1213,7 +1308,7 @@ function buildTimelineRuler() {
 
 function buildTimelineLegend() {
   timelineLegend.replaceChildren();
-  for (const camera of state.cameras) {
+  for (const camera of activeCameras()) {
     const item = document.createElement("span");
     const marker = document.createElement("i");
     const label = document.createElement("b");
@@ -1560,10 +1655,10 @@ function replayMasterCameraID() {
   if (state.focusedReplayCamera && state.replaySessions.has(state.focusedReplayCamera)) {
     return state.focusedReplayCamera;
   }
-  return state.cameras.find((camera) => {
+  return activeCameras().find((camera) => {
     const video = state.replayPlayers.get(camera.id);
     return state.replaySessions.has(camera.id) && video && !video.paused && !video.ended;
-  })?.id || state.cameras.find((camera) => {
+  })?.id || activeCameras().find((camera) => {
     const video = state.replayPlayers.get(camera.id);
     return state.replaySessions.has(camera.id) && video && !video.ended;
   })?.id || null;
@@ -1579,7 +1674,7 @@ async function playSelectedTime(generation, selectedDate) {
   if (!isCurrentReplay(generation, selectedDate) || state.recordingsDate !== selectedDate) return;
   const hasRecordings = [...state.recordingsByCamera.values()].some((recordings) => recordings.length);
   if (!hasRecordings) {
-    for (const camera of state.cameras) {
+    for (const camera of activeCameras()) {
       showReplayMessage(camera.id, "当天暂无录像");
     }
     return;
@@ -1594,11 +1689,12 @@ async function playSelectedTime(generation, selectedDate) {
   const dayEnd = dayStart + DAY_SECONDS;
   const playback = [];
   const desiredPlayback = new Map();
+  const currentCameras = activeCameras();
   const selectedCameras = state.focusedReplayCamera
-    ? state.cameras.filter((camera) => camera.id === state.focusedReplayCamera)
-    : state.cameras;
+    ? currentCameras.filter((camera) => camera.id === state.focusedReplayCamera)
+    : currentCameras;
   const selectedIDs = new Set(selectedCameras.map((camera) => camera.id));
-  for (const camera of state.cameras) {
+  for (const camera of currentCameras) {
     if (!selectedIDs.has(camera.id)) {
       stopReplay(camera.id);
     }
@@ -1823,7 +1919,7 @@ async function advanceReplayAfterEnd(cameraID) {
   }
   const visibleCameraIDs = state.focusedReplayCamera
     ? [state.focusedReplayCamera]
-    : state.cameras.map((camera) => camera.id);
+    : activeCameras().map((camera) => camera.id);
   const activeSessions = visibleCameraIDs
     .map((id) => ({id, session: state.replaySessions.get(id), video: state.replayPlayers.get(id)}))
     .filter(({session}) => Boolean(session));
@@ -2131,7 +2227,7 @@ function armReplayWatchdog(cameraID, replay, generation, selectedDate) {
 }
 
 function stopReplay(cameraID, resetRecovery = true) {
-  const cameraIDs = cameraID ? [cameraID] : state.cameras.map((camera) => camera.id);
+  const cameraIDs = cameraID ? [cameraID] : [...state.replayPlayers.keys()];
   for (const id of cameraIDs) {
     clearReplayWatchdog(id);
     if (resetRecovery) {
@@ -2162,10 +2258,7 @@ function stopReplay(cameraID, resetRecovery = true) {
 function cancelReplayWork(stopPlayers = true, abortRecordings = true) {
   state.replayGeneration += 1;
   if (abortRecordings) {
-    state.recordingsAbortController?.abort();
-    state.recordingsAbortController = null;
-    timelineViewport.classList.remove("is-disabled", "is-scrubbing");
-    timelineViewport.setAttribute("aria-disabled", "false");
+    abortRecordingIndexes();
   }
   cancelTimelineMotion();
   state.timelineGesture = null;
@@ -2200,7 +2293,7 @@ function suspendCurrentPlayback() {
 }
 
 function resumeCurrentPlayback() {
-  if (document.hidden || !state.suspended || !state.cameras.length) return;
+  if (document.hidden || !state.suspended || !activeCameras().length) return;
   state.suspended = false;
   if (state.mode === "live") {
     buildLiveView();

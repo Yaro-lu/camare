@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#080b0d">
   <title>实时画面</title>
   <link rel="icon" href="/assets/mark.svg">
-  <link rel="stylesheet" href="/assets/common.css?v=20260810-3">
-  <script type="module" src="/assets/client.js?v=20260810-3"></script>
+  <link rel="stylesheet" href="/assets/common.css?v=20260811-1">
+  <script type="module" src="/assets/client.js?v=20260811-1"></script>
 </head>
 <body class="viewer">
   <main class="viewer-shell">
@@ -18,6 +18,8 @@
       </div>
       <div class="live-indicator"><i></i><span id="statusText">连接中</span></div>
     </header>
+
+    <nav id="cameraGroupTabs" class="camera-group-tabs" aria-label="摄像头区域" hidden></nav>
 
     <section id="liveView" class="live-grid" aria-label="实时摄像头"></section>
 

@@ -33,6 +33,12 @@ type Camera struct {
 	Name string `json:"name"`
 }
 
+type publicCameraGroup struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	CameraIDs []string `json:"camera_ids"`
+}
+
 type Config struct {
 	PublicBaseURL              string
 	LocalBaseURL               string
@@ -188,6 +194,7 @@ func (a *App) PublicHandler() http.Handler {
 	mux.HandleFunc("POST /api/pair/redeem", a.redeemPairing)
 	mux.HandleFunc("GET /assets/common.css", a.staticFile("assets/common.css"))
 	mux.HandleFunc("GET /assets/client.js", a.staticFile("assets/client.js"))
+	mux.HandleFunc("GET /assets/camera-groups.mjs", a.staticFile("assets/camera-groups.mjs"))
 	mux.HandleFunc("GET /assets/timeline-core.mjs", a.staticFile("assets/timeline-core.mjs"))
 	mux.HandleFunc("GET /assets/pair.js", a.staticFile("assets/pair.js"))
 	mux.HandleFunc("GET /assets/unbound.js", a.staticFile("assets/unbound.js"))
@@ -302,9 +309,31 @@ func (a *App) publicConfig(w http.ResponseWriter, _ *http.Request) {
 	_, offset := now.Zone()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cameras":                      a.config.Cameras,
+		"camera_groups":                a.publicCameraGroups(),
 		"recording_timezone":           a.config.RecordingTimezone,
 		"recording_utc_offset_seconds": offset,
 	})
+}
+
+func (a *App) publicCameraGroups() []publicCameraGroup {
+	groups := make([]publicCameraGroup, 0, len(a.config.CameraGroups))
+	for _, group := range a.config.CameraGroups {
+		cameraIDs := make([]string, 0, len(group.CameraIDs))
+		for _, cameraID := range group.CameraIDs {
+			if cameraID != "" {
+				cameraIDs = append(cameraIDs, cameraID)
+			}
+		}
+		if len(cameraIDs) == 0 {
+			continue
+		}
+		groups = append(groups, publicCameraGroup{
+			ID:        group.ID,
+			Name:      group.Name,
+			CameraIDs: cameraIDs,
+		})
+	}
+	return groups
 }
 
 func (a *App) recordings(w http.ResponseWriter, r *http.Request) {
