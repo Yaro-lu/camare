@@ -1,5 +1,7 @@
 # 自动部署器设计
 
+> Historical design for the legacy `deploy.py` installer. It is not an installation guide. New deployments use `camarectl` and only `/opt/1panel/docker/compose/camare-<instance-id>`; see the [root README](../../README.md) and [Quickstart](../quickstart.md).
+
 ## 目标
 
 为当前已经验证的 Frigate、Camera Portal、LAN Caddy 和可选 Cloudflare Tunnel 增加一个 Linux 交互式安装器。用户不再手工复制和同步多份 `.env`，只需回答一次摄像头、录像目录、局域网和公网入口问题。首版只自动化当前 Intel VAAPI、两路 RTSP 结构，不猜测 NVIDIA/AMD 驱动，也不修改路由器、Mihomo、防火墙或正在运行的远程服务器。

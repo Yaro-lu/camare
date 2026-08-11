@@ -1,5 +1,7 @@
 # 管理页摄像头分组与录音控制设计
 
+> Historical design for the legacy multi-Compose deployment. It is not an installation guide. New instances use only `/opt/1panel/docker/compose/camare-<instance-id>`; see the [root README](../../README.md) and [Quickstart](../quickstart.md).
+
 ## 状态
 
 已于 2026-08-10 实施并部署。
