@@ -71,6 +71,22 @@ class RepositoryPolicyTests(unittest.TestCase):
                 text = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
                 self.assertNotIn("container_name:", text)
 
+    def test_legacy_verifiers_discover_compose_services_instead_of_fixed_names(self) -> None:
+        frigate = (REPOSITORY_ROOT / "frigate-1panel" / "verify.sh").read_text(
+            encoding="utf-8"
+        )
+        lan = (
+            REPOSITORY_ROOT / "camera-portal-lan" / "scripts" / "verify.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("docker compose ps -q frigate", frigate)
+        self.assertIn('"$frigate_id"', frigate)
+        self.assertNotIn("docker exec frigate", frigate)
+        self.assertIn("docker compose ps -q lan-caddy", lan)
+        self.assertIn("com.docker.compose.service", lan)
+        self.assertNotIn("docker inspect camera-portal \\", lan)
+        self.assertNotIn("docker inspect camera-portal-lan-caddy", lan)
+
     def test_local_builds_use_normal_networking_unless_explicitly_overridden(self) -> None:
         expected = {
             "camera-portal/compose.yaml": (
