@@ -26,6 +26,21 @@ CLOUDFLARED_IMAGE = (
     "cloudflare/cloudflared:2026.7.3@"
     "sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf"
 )
+PORTAL_BUILD_INPUTS = (
+    Path("camera-portal/.dockerignore"),
+    Path("camera-portal/Dockerfile"),
+    Path("camera-portal/go.mod"),
+    Path("camera-portal/go.sum"),
+    Path("camera-portal/package.json"),
+    Path("camera-portal/package-lock.json"),
+    Path("camera-portal/cmd"),
+    Path("camera-portal/internal"),
+    Path("camera-portal/web"),
+)
+CADDY_BUILD_INPUTS = (
+    Path("camera-portal-lan/caddy/Dockerfile"),
+    Path("camera-portal-lan/caddy/Caddyfile"),
+)
 
 
 def _write(path: Path, content: str | bytes, mode: int) -> None:
@@ -165,6 +180,39 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _build_input_digest(source: Path, inputs: tuple[Path, ...]) -> str:
+    """Identify a local image by the exact source inputs that can affect it."""
+
+    files: list[Path] = []
+    for relative in inputs:
+        candidate = source / relative
+        if candidate.is_symlink():
+            raise RenderError(f"build input is an unsafe symlink: {relative.as_posix()}")
+        if candidate.is_file():
+            files.append(candidate)
+            continue
+        if not candidate.is_dir():
+            raise RenderError(f"missing build input: {relative.as_posix()}")
+        for child in candidate.rglob("*"):
+            child_relative = child.relative_to(source)
+            if child.is_symlink():
+                raise RenderError(
+                    f"build input is an unsafe symlink: {child_relative.as_posix()}"
+                )
+            if child.is_file() and "__pycache__" not in child_relative.parts:
+                if child.suffix not in {".pyc", ".pyo"}:
+                    files.append(child)
+    digest = hashlib.sha256()
+    for path in sorted(files, key=lambda item: item.relative_to(source).as_posix()):
+        relative = path.relative_to(source).as_posix().encode("utf-8")
+        content = path.read_bytes()
+        digest.update(len(relative).to_bytes(4, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()[:16]
+
+
 def render_runtime(
     config: DeploymentConfig,
     *,
@@ -190,6 +238,8 @@ def render_runtime(
         raise RenderError(f"missing render source: {missing[0]}")
 
     groups = _active_groups(config)
+    portal_build_id = _build_input_digest(source, PORTAL_BUILD_INPUTS)
+    caddy_build_id = _build_input_digest(source, CADDY_BUILD_INPUTS)
     cameras_value, groups_value = _portal_values(groups)
     go2rtc, cameras, secret_specs = _frigate_sections(groups)
     access_key = (
@@ -310,8 +360,14 @@ def render_runtime(
             ("CAMARE_INSTANCE_ID", config.instance_id),
             ("CAMARE_SOURCE_ROOT", source.as_posix()),
             ("FRIGATE_IMAGE", FRIGATE_IMAGE),
-            ("CAMERA_PORTAL_IMAGE", f"local/camare-{config.instance_id}-portal:latest"),
-            ("LAN_CADDY_IMAGE", f"local/camare-{config.instance_id}-caddy:2.11.4"),
+            (
+                "CAMERA_PORTAL_IMAGE",
+                f"local/camare-{config.instance_id}-portal:src-{portal_build_id}",
+            ),
+            (
+                "LAN_CADDY_IMAGE",
+                f"local/camare-{config.instance_id}-caddy:src-{caddy_build_id}",
+            ),
             ("CLOUDFLARED_IMAGE", CLOUDFLARED_IMAGE),
             ("CAMARE_MEDIA_PATH", config.media.as_posix()),
             ("FRIGATE_ADMIN_BIND_IP", config.admin.frigate_bind_ip),

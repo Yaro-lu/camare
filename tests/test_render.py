@@ -1,6 +1,8 @@
 import hashlib
 import json
 import os
+import re
+import shutil
 import stat
 import tempfile
 import unittest
@@ -203,6 +205,15 @@ path = /live/201
             self.assertIn('ADMIN_DISABLED="true"', environment)
             self.assertIn('ADMIN_ORIGIN=""', environment)
             self.assertIn('ADMIN_TAILSCALE_LOGIN=""', environment)
+            self.assertRegex(
+                environment,
+                r'CAMERA_PORTAL_IMAGE="local/camare-render-test-portal:src-[0-9a-f]{16}"',
+            )
+            self.assertRegex(
+                environment,
+                r'LAN_CADDY_IMAGE="local/camare-render-test-caddy:src-[0-9a-f]{16}"',
+            )
+            self.assertNotIn("portal:latest", environment)
             self.assertNotIn("LAN_ACCESS_KEY", environment)
             self.assertIn("LOCAL_ACCESS_KEY_FILE: /run/secrets/LAN_ACCESS_KEY", compose)
             self.assertIn("cat /run/secrets/LAN_ACCESS_KEY", compose)
@@ -236,6 +247,51 @@ path = /live/201
             self.assertIn(".env", manifest["files"])
             for relative, expected_digest in manifest["files"].items():
                 self.assertEqual(file_digest(layout.root / relative), expected_digest)
+
+    def test_local_image_tags_change_with_build_inputs_and_never_reuse_latest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            shutil.copytree(REPOSITORY_ROOT / "deploy", source / "deploy")
+            shutil.copytree(
+                REPOSITORY_ROOT / "camera-portal",
+                source / "camera-portal",
+                ignore=shutil.ignore_patterns("node_modules", "__pycache__", "*.pyc"),
+            )
+            shutil.copytree(
+                REPOSITORY_ROOT / "camera-portal-lan" / "caddy",
+                source / "camera-portal-lan" / "caddy",
+            )
+            config = load_config(self.write_lan_config(root))
+
+            first = render_runtime(
+                config,
+                source_root=source,
+                staging_parent=root / "staging",
+                lan_access_key="i" * 64,
+            )
+            first_env = first.env.read_text(encoding="utf-8")
+            client = source / "camera-portal" / "web" / "assets" / "client.js"
+            client.write_text(
+                client.read_text(encoding="utf-8") + "\n// build identity test\n",
+                encoding="utf-8",
+            )
+            second = render_runtime(
+                config,
+                source_root=source,
+                staging_parent=root / "staging",
+                lan_access_key="i" * 64,
+            )
+            second_env = second.env.read_text(encoding="utf-8")
+
+            pattern = re.compile(r'^CAMERA_PORTAL_IMAGE="([^"]+)"$', re.MULTILINE)
+            first_image = pattern.search(first_env)
+            second_image = pattern.search(second_env)
+            self.assertIsNotNone(first_image)
+            self.assertIsNotNone(second_image)
+            assert first_image is not None and second_image is not None
+            self.assertNotEqual(first_image.group(1), second_image.group(1))
+            self.assertNotIn(":latest", first_image.group(1) + second_image.group(1))
 
     def test_intel_render_uses_only_the_configured_vaapi_device_and_driver(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

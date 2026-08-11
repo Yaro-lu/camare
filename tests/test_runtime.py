@@ -363,7 +363,9 @@ class RuntimeApplyTests(unittest.TestCase):
             self.assertEqual(len(runner.calls), 3)
             self.assertEqual(runner.calls[0][0][-2:], ("config", "--quiet"))
             self.assertEqual(runner.calls[1][0][-3:], ("up", "-d", "--build"))
-            self.assertEqual(runner.calls[2][0][-3:], ("up", "-d", "--build"))
+            self.assertEqual(
+                runner.calls[2][0][-3:], ("up", "-d", "--no-build")
+            )
             self.assertIn("compose.intel.yaml", " ".join(runner.calls[2][0]))
 
     def test_verifier_failure_restores_previous_runtime_without_exposing_secrets(self) -> None:
@@ -403,7 +405,7 @@ class RuntimeApplyTests(unittest.TestCase):
             self.assertTrue(second.root.exists())
             self.assertEqual(
                 [call[0][-3:] for call in runner.calls if "up" in call[0]],
-                [("up", "-d", "--build"), ("up", "-d", "--build")],
+                [("up", "-d", "--build"), ("up", "-d", "--no-build")],
             )
             self.assertNotIn(raw_secret, output.getvalue())
 

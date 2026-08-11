@@ -441,7 +441,9 @@ def _recover_previous_runtime(
         _restore_controls(backup, target)
     previous = _load_manifest(target)
     _apply_ownership(target, previous, ownership)
-    _run(runner, target, previous, ("up", "-d", "--build"), timeout)
+    # Rollback must reuse the previous content-addressed image. Rebuilding here
+    # from a newer checkout would silently create a mixed old-config/new-code state.
+    _run(runner, target, previous, ("up", "-d", "--no-build"), timeout)
 
 
 def _remove_staging(staging: Path) -> None:
