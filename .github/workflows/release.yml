@@ -69,15 +69,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - name: Build immutable SHA candidate
         id: build
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ${{ matrix.context }}
           platforms: ${{ matrix.platform }}
@@ -126,7 +126,7 @@ jobs:
             --output "/out/$SBOM_NAME" \
             --no-progress \
             "$IMAGE_REPOSITORY@$IMAGE_DIGEST"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ matrix.key }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/release
@@ -150,25 +150,25 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-portal-amd64
           path: ${{ runner.temp }}/release-input/portal/amd64
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-portal-arm64
           path: ${{ runner.temp }}/release-input/portal/arm64
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-lan-caddy-amd64
           path: ${{ runner.temp }}/release-input/lan-caddy/amd64
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-lan-caddy-arm64
           path: ${{ runner.temp }}/release-input/lan-caddy/arm64
@@ -281,14 +281,14 @@ jobs:
               docker buildx imagetools inspect "$image" >/dev/null
           done
       - name: Attest Portal provenance
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/yaro-lu/camare-portal
           subject-digest: ${{ steps.publish-images.outputs.portal_digest }}
           subject-version: ${{ github.ref_name }}
           push-to-registry: true
       - name: Attest Portal amd64 SBOM
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/yaro-lu/camare-portal
           subject-digest: ${{ steps.publish-images.outputs.portal_amd64_digest }}
@@ -296,7 +296,7 @@ jobs:
           sbom-path: ${{ steps.publish-images.outputs.asset_dir }}/camare-portal-linux-amd64.spdx.json
           push-to-registry: true
       - name: Attest Portal arm64 SBOM
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/yaro-lu/camare-portal
           subject-digest: ${{ steps.publish-images.outputs.portal_arm64_digest }}
@@ -304,14 +304,14 @@ jobs:
           sbom-path: ${{ steps.publish-images.outputs.asset_dir }}/camare-portal-linux-arm64.spdx.json
           push-to-registry: true
       - name: Attest LAN Caddy provenance
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/yaro-lu/camare-lan-caddy
           subject-digest: ${{ steps.publish-images.outputs.lan_caddy_digest }}
           subject-version: ${{ github.ref_name }}
           push-to-registry: true
       - name: Attest LAN Caddy amd64 SBOM
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/yaro-lu/camare-lan-caddy
           subject-digest: ${{ steps.publish-images.outputs.lan_caddy_amd64_digest }}
@@ -319,7 +319,7 @@ jobs:
           sbom-path: ${{ steps.publish-images.outputs.asset_dir }}/camare-lan-caddy-linux-amd64.spdx.json
           push-to-registry: true
       - name: Attest LAN Caddy arm64 SBOM
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/yaro-lu/camare-lan-caddy
           subject-digest: ${{ steps.publish-images.outputs.lan_caddy_arm64_digest }}
