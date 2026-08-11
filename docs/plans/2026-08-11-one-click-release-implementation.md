@@ -4,7 +4,7 @@
 
 **Goal:** 把当前家庭服务器快照改造成 checkout 保持干净、支持两组双路、可诊断、可验证、可隔离测试和可版本发布的一键部署项目。
 
-**Architecture:** 保留现有 Frigate/go2rtc/Portal，新增标准库 Python `camarectl` 生成 `/opt/camare/<instance>` 单栈运行目录。Compose 资源由实例命名空间隔离；Portal 只加载当前摄像头组。旧的分目录 Compose 和 `deploy.py` 在迁移期保留，但不再作为推荐安装路径。
+**Architecture:** 保留现有 Frigate/go2rtc/Portal，新增标准库 Python `camarectl` 生成 `/opt/1panel/docker/compose/camare-<instance-id>` 单栈运行目录；`runtime_dir` 始终是完整实例目录。Compose 资源由实例命名空间隔离；Portal 只加载当前摄像头组。旧的分目录 Compose 和 `deploy.py` 在迁移期保留，但不再作为推荐安装路径。
 
 **Tech Stack:** Python 3.10+ 标准库、Docker Compose v2、Frigate 0.17.2、Go、原生 ES modules、Caddy、GitHub Actions/GHCR。
 

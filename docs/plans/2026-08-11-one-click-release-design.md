@@ -10,7 +10,7 @@
 
 ## 发行架构
 
-源码 checkout 只保存模板和程序，运行文件生成到 `/opt/camare/<instance-id>/`。该目录包含单一 Compose 编排、`.env`、Frigate 配置、Docker secrets、Portal 状态和安装清单；录像仍直接绑定到用户指定目录，只有一份。这样 `git pull --ff-only` 不再与运行配置冲突，1Panel 也只需导入一个生成后的编排目录。
+源码 checkout 只保存模板和程序，运行文件生成到 `/opt/1panel/docker/compose/camare-<instance-id>/`。`runtime_dir` 表示这个完整实例目录，而不是它的父目录。该目录包含单一 Compose 编排、`.env`、Frigate 配置、Docker secrets、Portal 状态和安装清单；录像仍直接绑定到用户指定目录，只有一份。这样 `git pull --ff-only` 不再与运行配置冲突，1Panel 也只需导入一个生成后的编排目录。
 
 CLI 使用 Python 标准库，入口为 `python3 -m camarectl`，并保留 `install.sh` 与旧 `deploy.py` 的兼容提示。声明式配置采用 INI：部署段描述实例、端口、硬件、存储和入口；每个 `[group:<id>]` 描述一台物理设备及其一到两路 RTSP。密码和 Tunnel token 只从权限为 `0600` 的独立文件读取，不允许写入命令行、配置摘要或 Git。
 
