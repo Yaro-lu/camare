@@ -56,10 +56,28 @@ def make_staging(
         *(() if layout.intel_compose is None else (layout.intel_compose,)),
         layout.caddyfile,
     ]
+    required_ownership = {
+        "portal-data": {"uid": 65532, "gid": 65532, "mode": "0750"},
+        "secrets": {"uid": 0, "gid": 0, "mode": "0700"},
+        "secrets/lan-access-key": {"uid": 0, "gid": 65532, "mode": "0440"},
+    }
+    for name in secret_names:
+        if name.startswith("camera-password-"):
+            required_ownership[f"secrets/{name}"] = {
+                "uid": 0,
+                "gid": 0,
+                "mode": "0600",
+            }
+    if "cloudflare-token" in secret_names:
+        required_ownership["secrets/cloudflare-token"] = {
+            "uid": 65532,
+            "gid": 65532,
+            "mode": "0400",
+        }
     manifest = {
         "format_version": 2,
         "instance_id": instance_id,
-        "provider": "lan",
+        "provider": "cloudflare" if "cloudflare-token" in secret_names else "lan",
         "hardware": "intel-vaapi" if intel else "cpu",
         "build_mode": "local",
         "compose_files": [
@@ -71,9 +89,7 @@ def make_staging(
             for path in non_secret
         },
         "mutable_files": ["frigate/config.yml"],
-        "required_ownership": {
-            "portal-data": {"uid": 65532, "gid": 65532, "mode": "0750"}
-        },
+        "required_ownership": required_ownership,
     }
     layout.manifest.write_text(
         json.dumps(manifest, sort_keys=True), encoding="utf-8"
@@ -97,6 +113,58 @@ class RecordingRunner:
 
 
 class RuntimeApplyTests(unittest.TestCase):
+    def test_provider_switches_remove_orphans_in_both_directions(self) -> None:
+        providers = {
+            "lan": ("lan-access-key", "camera-password-1"),
+            "cloudflare": (
+                "lan-access-key",
+                "camera-password-1",
+                "cloudflare-token",
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for old_provider, new_provider in (
+                ("lan", "cloudflare"),
+                ("cloudflare", "lan"),
+            ):
+                with self.subTest(old=old_provider, new=new_provider):
+                    direction = root / f"{old_provider}-to-{new_provider}"
+                    target = direction / "runtime"
+                    apply_staging(
+                        make_staging(
+                            direction / "staging",
+                            "v1",
+                            secret_names=providers[old_provider],
+                        ),
+                        target,
+                        RecordingRunner(),
+                        ownership=lambda *_: None,
+                    )
+                    runner = RecordingRunner()
+
+                    apply_staging(
+                        make_staging(
+                            direction / "staging",
+                            "v2",
+                            secret_names=providers[new_provider],
+                        ),
+                        target,
+                        runner,
+                        ownership=lambda *_: None,
+                    )
+
+                    starts = [
+                        arguments
+                        for arguments, _, _ in runner.calls
+                        if "up" in arguments
+                    ]
+                    self.assertEqual(len(starts), 1)
+                    self.assertEqual(
+                        starts[0][-5:],
+                        ("up", "-d", "--build", "--wait", "--remove-orphans"),
+                    )
+
     def test_public_staging_validation_is_read_only_and_returns_no_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -156,7 +224,12 @@ class RuntimeApplyTests(unittest.TestCase):
             )
             self.assertEqual(
                 ownership_calls,
-                [(target / "portal-data", 65532, 65532, 0o750)],
+                [
+                    (target / "portal-data", 65532, 65532, 0o750),
+                    (target / "secrets", 0, 0, 0o700),
+                    (target / "secrets/camera-password-1", 0, 0, 0o600),
+                    (target / "secrets/lan-access-key", 0, 65532, 0o440),
+                ],
             )
             self.assertEqual(verified, [target.resolve()])
             self.assertEqual(len(runner.calls), 2)
@@ -165,7 +238,10 @@ class RuntimeApplyTests(unittest.TestCase):
             self.assertIn("config", validation[0])
             self.assertIn("--quiet", validation[0])
             self.assertEqual(start[1], target.resolve())
-            self.assertEqual(start[0][-3:], ("up", "-d", "--build"))
+            self.assertEqual(
+                start[0][-5:],
+                ("up", "-d", "--build", "--wait", "--remove-orphans"),
+            )
             self.assertTrue(all(timeout > 0 for _, _, timeout in runner.calls))
             self.assertEqual(output.getvalue(), "")
 
@@ -377,7 +453,7 @@ class RuntimeApplyTests(unittest.TestCase):
             ) -> None:
                 nonlocal up_attempts
                 runner(arguments, cwd=cwd, timeout=timeout)
-                if arguments[-3:] == ("up", "-d", "--build"):
+                if "up" in arguments and "--build" in arguments:
                     up_attempts += 1
                     if up_attempts == 1:
                         raise RuntimeError("new project failed")
@@ -400,11 +476,192 @@ class RuntimeApplyTests(unittest.TestCase):
             self.assertTrue(second.root.exists())
             self.assertEqual(len(runner.calls), 3)
             self.assertEqual(runner.calls[0][0][-2:], ("config", "--quiet"))
-            self.assertEqual(runner.calls[1][0][-3:], ("up", "-d", "--build"))
             self.assertEqual(
-                runner.calls[2][0][-3:], ("up", "-d", "--no-build")
+                runner.calls[1][0][-5:],
+                ("up", "-d", "--build", "--wait", "--remove-orphans"),
+            )
+            self.assertEqual(
+                runner.calls[2][0][-5:],
+                ("up", "-d", "--no-build", "--wait", "--remove-orphans"),
             )
             self.assertIn("compose.intel.yaml", " ".join(runner.calls[2][0]))
+
+    def test_legacy_v2_start_failure_restores_the_previous_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "runtime"
+            apply_staging(
+                make_staging(root / "staging", "v1", intel=True),
+                target,
+                RecordingRunner(),
+                ownership=lambda *_: None,
+            )
+            legacy = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
+            legacy.pop("required_ownership")
+            (target / "manifest.json").write_text(
+                json.dumps(legacy, sort_keys=True), encoding="utf-8"
+            )
+            second = make_staging(root / "staging", "v2", intel=False)
+            runner = RecordingRunner()
+
+            def fail_new_start(
+                arguments: tuple[str, ...], *, cwd: Path, timeout: float
+            ) -> None:
+                runner(arguments, cwd=cwd, timeout=timeout)
+                if "up" in arguments and "--build" in arguments:
+                    raise RuntimeError("injected new start failure")
+
+            with self.assertRaisesRegex(ApplyError, "restored"):
+                apply_staging(
+                    second,
+                    target,
+                    fail_new_start,
+                    ownership=lambda *_: None,
+                )
+
+            restored = json.loads(
+                (target / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertNotIn("required_ownership", restored)
+            self.assertEqual(
+                (target / "frigate/config.yml").read_text(encoding="utf-8"),
+                "version: v1\n",
+            )
+            recovery = [
+                arguments
+                for arguments, _, _ in runner.calls
+                if "up" in arguments and "--no-build" in arguments
+            ]
+            self.assertEqual(len(recovery), 1)
+
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() == 0,
+        "exact uid/gid rollback requires Linux root",
+    )
+    def test_legacy_v2_start_failure_preserves_original_owner_group_and_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "runtime"
+            apply_staging(
+                make_staging(root / "staging", "v1"),
+                target,
+                RecordingRunner(),
+            )
+            legacy = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
+            legacy.pop("required_ownership")
+            (target / "manifest.json").write_text(
+                json.dumps(legacy, sort_keys=True), encoding="utf-8"
+            )
+            expected = {
+                target / "portal-data": (1234, 2345, 0o711),
+                target / "secrets": (0, 3456, 0o710),
+                target / "secrets/lan-access-key": (0, 3456, 0o440),
+                target / "secrets/camera-password-1": (0, 0, 0o600),
+            }
+            for path, (uid, gid, mode) in expected.items():
+                os.chown(path, uid, gid)
+                path.chmod(mode)
+            second = make_staging(root / "staging", "v2")
+
+            def fail_new_start(
+                arguments: tuple[str, ...], *, cwd: Path, timeout: float
+            ) -> None:
+                if "up" in arguments and "--build" in arguments:
+                    raise RuntimeError("injected new start failure")
+
+            with self.assertRaisesRegex(ApplyError, "restored"):
+                apply_staging(second, target, fail_new_start)
+
+            for path, wanted in expected.items():
+                status = path.stat()
+                self.assertEqual(
+                    (status.st_uid, status.st_gid, status.st_mode & 0o777),
+                    wanted,
+                )
+
+    def test_early_control_switch_failure_replays_previous_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "runtime"
+            apply_staging(
+                make_staging(root / "staging", "v1"),
+                target,
+                RecordingRunner(),
+                ownership=lambda *_: None,
+            )
+            previous_secret = target / "secrets/lan-access-key"
+            previous_status = previous_secret.stat()
+            previous_metadata = (
+                previous_secret,
+                previous_status.st_uid,
+                previous_status.st_gid,
+                previous_status.st_mode & 0o777,
+            )
+            second = make_staging(root / "staging", "v2")
+            calls: list[tuple[Path, int, int, int]] = []
+
+            def corrupt_after_validation(
+                arguments: tuple[str, ...], *, cwd: Path, timeout: float
+            ) -> None:
+                if arguments[-2:] == ("config", "--quiet"):
+                    document = json.loads(
+                        (cwd / "manifest.json").read_text(encoding="utf-8")
+                    )
+                    document["required_ownership"]["secrets/lan-access-key"][
+                        "mode"
+                    ] = "0777"
+                    (cwd / "manifest.json").write_text(
+                        json.dumps(document), encoding="utf-8"
+                    )
+
+            with self.assertRaisesRegex(ApplyError, "control switch failed"):
+                apply_staging(
+                    second,
+                    target,
+                    corrupt_after_validation,
+                    ownership=lambda path, uid, gid, mode: calls.append(
+                        (path, uid, gid, mode)
+                    ),
+                )
+
+            self.assertIn(previous_metadata, calls)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX private modes required")
+    def test_internal_backup_keeps_secrets_private_and_metadata_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "runtime"
+            first = make_staging(root / "staging", "v1")
+            apply_staging(
+                first,
+                target,
+                RecordingRunner(),
+                ownership=lambda *_: None,
+            )
+            secret = target / "secrets/lan-access-key"
+            secret.chmod(0o440)
+            raw_secret = secret.read_text(encoding="utf-8")
+
+            result = apply_staging(
+                make_staging(root / "staging", "v2"),
+                target,
+                RecordingRunner(),
+                ownership=lambda *_: None,
+            )
+
+            assert result.backup_root is not None
+            backup_secret = result.backup_root / "secrets/lan-access-key"
+            metadata_path = result.backup_root / ".camare-metadata.json"
+            metadata_text = metadata_path.read_text(encoding="utf-8")
+            self.assertNotIn(raw_secret, metadata_text)
+            metadata = json.loads(metadata_text)
+            self.assertEqual(
+                metadata["entries"]["secrets/lan-access-key"]["mode"],
+                "0440",
+            )
+            if os.name == "posix":
+                self.assertEqual(backup_secret.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(metadata_path.stat().st_mode & 0o777, 0o600)
 
     def test_verifier_failure_restores_previous_runtime_without_exposing_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -442,8 +699,17 @@ class RuntimeApplyTests(unittest.TestCase):
             )
             self.assertTrue(second.root.exists())
             self.assertEqual(
-                [call[0][-3:] for call in runner.calls if "up" in call[0]],
-                [("up", "-d", "--build"), ("up", "-d", "--no-build")],
+                [call[0][-5:] for call in runner.calls if "up" in call[0]],
+                [
+                    ("up", "-d", "--build", "--wait", "--remove-orphans"),
+                    (
+                        "up",
+                        "-d",
+                        "--no-build",
+                        "--wait",
+                        "--remove-orphans",
+                    ),
+                ],
             )
             self.assertNotIn(raw_secret, output.getvalue())
 
@@ -462,7 +728,7 @@ class RuntimeApplyTests(unittest.TestCase):
                 arguments: tuple[str, ...], *, cwd: Path, timeout: float
             ) -> None:
                 runner(arguments, cwd=cwd, timeout=timeout)
-                if arguments[-3:] == ("up", "-d", "--build"):
+                if "up" in arguments and "--build" in arguments:
                     raise RuntimeError("start failed")
 
             with self.assertRaisesRegex(ApplyError, "diagnostic runtime"):
@@ -561,6 +827,22 @@ class RuntimeApplyTests(unittest.TestCase):
 
             self.assertEqual(runner.calls, [])
             self.assertTrue(layout.root.is_dir())
+
+    def test_manifest_rejects_weakened_secret_ownership_before_compose(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layout = make_staging(root / "staging", "v1")
+            manifest = json.loads(layout.manifest.read_text(encoding="utf-8"))
+            manifest["required_ownership"]["secrets/lan-access-key"][
+                "mode"
+            ] = "0777"
+            layout.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+            runner = RecordingRunner()
+
+            with self.assertRaisesRegex(ApplyError, "ownership"):
+                validate_staging(layout, runner)
+
+            self.assertEqual(runner.calls, [])
 
     def test_instance_lock_rejects_a_concurrent_apply(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

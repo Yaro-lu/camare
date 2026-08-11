@@ -14,6 +14,12 @@ from camarectl.model import (
 )
 
 
+COMPOSE_UP_HELP_WITH_WAIT = """Usage: docker compose up [OPTIONS]
+      --wait                 Wait for services to be running|healthy
+      --wait-timeout int     Maximum duration to wait
+"""
+
+
 def deployment_config() -> DeploymentConfig:
     return DeploymentConfig(
         instance_id="test-camera",
@@ -107,6 +113,9 @@ def baseline_probes(**overrides: object) -> dict[str, object]:
             {
                 ("docker", "info", "--format", "{{.ServerVersion}}"): CommandResult(0, "28.3.3"),
                 ("docker", "compose", "version", "--short"): CommandResult(0, "2.39.1"),
+                ("docker", "compose", "up", "--help"): CommandResult(
+                    0, COMPOSE_UP_HELP_WITH_WAIT
+                ),
                 ("ffprobe", "-version"): CommandResult(returncode=127),
             }
         ),
@@ -164,6 +173,10 @@ class DoctorTests(unittest.TestCase):
                     returncode=0,
                     stdout="2.39.1\n",
                 ),
+                ("docker", "compose", "up", "--help"): CommandResult(
+                    returncode=0,
+                    stdout=COMPOSE_UP_HELP_WITH_WAIT,
+                ),
             }
         )
 
@@ -175,6 +188,33 @@ class DoctorTests(unittest.TestCase):
 
         self.assertEqual(by_code["docker.engine"].level, "PASS")
         self.assertEqual(by_code["docker.compose"].level, "PASS")
+        self.assertEqual(by_code["docker.compose.wait"].level, "PASS")
+
+    def test_requires_compose_up_wait_capability_without_matching_wait_timeout(self) -> None:
+        runner = FakeRunner(
+            {
+                ("docker", "info", "--format", "{{.ServerVersion}}"): CommandResult(
+                    0, "29.5.2\n"
+                ),
+                ("docker", "compose", "version", "--short"): CommandResult(
+                    0, "5.1.4\n"
+                ),
+                ("docker", "compose", "up", "--help"): CommandResult(
+                    0,
+                    "      --wait-timeout int   Maximum duration to wait\n",
+                ),
+            }
+        )
+
+        results = run_doctor(
+            deployment_config(),
+            **baseline_probes(runner=runner),
+        )
+        by_code = {result.code: result for result in results}
+
+        self.assertEqual(by_code["docker.compose"].level, "PASS")
+        self.assertEqual(by_code["docker.compose.wait"].level, "FAIL")
+        self.assertIn(("docker", "compose", "up", "--help"), runner.commands)
 
     def test_accepts_a_writable_runtime_parent_and_ready_media_directory(self) -> None:
         gibibyte = 1024**3
@@ -248,6 +288,9 @@ class DoctorTests(unittest.TestCase):
             {
                 ("docker", "info", "--format", "{{.ServerVersion}}"): CommandResult(0, "28.3.3"),
                 ("docker", "compose", "version", "--short"): CommandResult(0, "2.39.1"),
+                ("docker", "compose", "up", "--help"): CommandResult(
+                    0, COMPOSE_UP_HELP_WITH_WAIT
+                ),
                 ("ffprobe", "-version"): CommandResult(returncode=127),
             }
         )
@@ -284,6 +327,9 @@ class DoctorTests(unittest.TestCase):
             {
                 ("docker", "info", "--format", "{{.ServerVersion}}"): CommandResult(0, "28.3.3"),
                 ("docker", "compose", "version", "--short"): CommandResult(0, "2.39.1"),
+                ("docker", "compose", "up", "--help"): CommandResult(
+                    0, COMPOSE_UP_HELP_WITH_WAIT
+                ),
                 ("ffprobe", "-version"): CommandResult(0, "ffprobe 7.1"),
                 ffprobe_command("/live/101"): CommandResult(0, "h264\n"),
                 ffprobe_command("/live/201"): CommandResult(0, "hevc\n"),
@@ -371,6 +417,7 @@ class DoctorTests(unittest.TestCase):
             {
                 ("docker", "info", "--format", "{{.ServerVersion}}"): CommandResult(1),
                 ("docker", "compose", "version", "--short"): CommandResult(0, "1.29.2"),
+                ("docker", "compose", "up", "--help"): CommandResult(1),
                 ("ffprobe", "-version"): CommandResult(127),
             }
         )
@@ -383,6 +430,7 @@ class DoctorTests(unittest.TestCase):
 
         self.assertEqual(by_code["docker.engine"].level, "FAIL")
         self.assertEqual(by_code["docker.compose"].level, "FAIL")
+        self.assertEqual(by_code["docker.compose.wait"].level, "FAIL")
 
     def test_fails_missing_timezone_unwritable_runtime_and_invalid_media(self) -> None:
         paths = FakePathProbe(
@@ -486,6 +534,9 @@ class DoctorTests(unittest.TestCase):
             {
                 ("docker", "info", "--format", "{{.ServerVersion}}"): CommandResult(0, "28.3.3"),
                 ("docker", "compose", "version", "--short"): CommandResult(0, "2.39.1"),
+                ("docker", "compose", "up", "--help"): CommandResult(
+                    0, COMPOSE_UP_HELP_WITH_WAIT
+                ),
                 ("ffprobe", "-version"): CommandResult(0, "ffprobe 7.1"),
             }
         )
@@ -547,6 +598,9 @@ class DoctorTests(unittest.TestCase):
             {
                 ("docker", "info", "--format", "{{.ServerVersion}}"): CommandResult(0, "28.3.3"),
                 ("docker", "compose", "version", "--short"): CommandResult(0, "2.39.1"),
+                ("docker", "compose", "up", "--help"): CommandResult(
+                    0, COMPOSE_UP_HELP_WITH_WAIT
+                ),
                 ("ffprobe", "-version"): CommandResult(0, "ffprobe 7.1"),
             }
         )

@@ -35,13 +35,23 @@ def file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def write_private_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o600)
+
+
+def write_private_bytes(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    path.chmod(0o600)
+
+
 class RenderTests(unittest.TestCase):
     def write_lan_config(self, root: Path, *, hardware: str = "cpu") -> Path:
         secrets_dir = root / "input-secrets"
         secrets_dir.mkdir(parents=True)
-        (secrets_dir / "yard-password").write_text(
-            "p@ss:word/%", encoding="utf-8"
-        )
+        write_private_text(secrets_dir / "yard-password", "p@ss:word/%")
         if hardware == "cpu":
             hardware_values = "mode = cpu\nrender_device =\nva_driver ="
         else:
@@ -107,10 +117,8 @@ path = /live/201
     def write_cloudflare_two_group_config(self, root: Path) -> Path:
         config_path = self.write_lan_config(root, hardware="intel-vaapi")
         secret_dir = root / "input-secrets"
-        (secret_dir / "front-password").write_text(
-            "front?#/pass", encoding="utf-8"
-        )
-        (secret_dir / "cloudflare-token").write_bytes(b"cf-token-raw\n")
+        write_private_text(secret_dir / "front-password", "front?#/pass")
+        write_private_bytes(secret_dir / "cloudflare-token", b"cf-token-raw\n")
         content = config_path.read_text(encoding="utf-8")
         content = (
             content.replace("provider = lan", "provider = cloudflare")
@@ -251,6 +259,86 @@ path = /live/201
             for relative, expected_digest in manifest["files"].items():
                 self.assertEqual(file_digest(layout.root / relative), expected_digest)
 
+    def test_lan_access_secret_is_readable_only_by_its_consumer_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = load_config(self.write_lan_config(root))
+
+            layout = render_runtime(
+                config,
+                source_root=REPOSITORY_ROOT,
+                staging_parent=root / "staging",
+                lan_access_key="s" * 64,
+            )
+
+            compose = layout.base_compose.read_text(encoding="utf-8")
+            manifest = json.loads(layout.manifest.read_text(encoding="utf-8"))
+            portal_service, lan_service = compose.split("  camera-portal:", 1)[1].split(
+                "  lan-caddy:", 1
+            )
+            lan_service = lan_service.split("\nsecrets:", 1)[0]
+            self.assertNotIn("group_add:", portal_service)
+            self.assertIn('    group_add:\n      - "65532"\n', lan_service)
+            self.assertEqual(
+                manifest["required_ownership"]["secrets"],
+                {"uid": 0, "gid": 0, "mode": "0700"},
+            )
+            self.assertEqual(
+                manifest["required_ownership"]["secrets/lan-access-key"],
+                {"uid": 0, "gid": 65532, "mode": "0440"},
+            )
+            if os.name != "nt":
+                self.assertEqual(
+                    stat.S_IMODE(layout.secrets.stat().st_mode),
+                    0o700,
+                )
+                self.assertEqual(
+                    stat.S_IMODE((layout.secrets / "lan-access-key").stat().st_mode),
+                    0o440,
+                )
+
+    def test_consumer_secrets_keep_single_identity_read_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = load_config(self.write_cloudflare_two_group_config(root))
+
+            layout = render_runtime(
+                config,
+                source_root=REPOSITORY_ROOT,
+                staging_parent=root / "staging",
+                lan_access_key="r" * 64,
+            )
+
+            manifest = json.loads(layout.manifest.read_text(encoding="utf-8"))
+            ownership = manifest["required_ownership"]
+            cloudflared_service = layout.base_compose.read_text(
+                encoding="utf-8"
+            ).split("  cloudflared:", 1)[1].split("\nsecrets:", 1)[0]
+            self.assertIn('    user: "65532:65532"\n', cloudflared_service)
+            camera_secret = {"uid": 0, "gid": 0, "mode": "0600"}
+            for relative in (
+                "secrets/camera-password-1",
+                "secrets/camera-password-2",
+            ):
+                with self.subTest(relative=relative):
+                    self.assertEqual(ownership[relative], camera_secret)
+                    if os.name != "nt":
+                        self.assertEqual(
+                            stat.S_IMODE((layout.root / relative).stat().st_mode),
+                            0o600,
+                        )
+            self.assertEqual(
+                ownership["secrets/cloudflare-token"],
+                {"uid": 65532, "gid": 65532, "mode": "0400"},
+            )
+            if os.name != "nt":
+                self.assertEqual(
+                    stat.S_IMODE(
+                        (layout.secrets / "cloudflare-token").stat().st_mode
+                    ),
+                    0o400,
+                )
+
     def test_local_image_tags_change_with_build_inputs_and_never_reuse_latest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -300,8 +388,8 @@ path = /live/201
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config_path = self.write_lan_config(root)
-            (root / "input-secrets" / "yard-password").write_text(
-                "line-password\n", encoding="utf-8"
+            write_private_text(
+                root / "input-secrets" / "yard-password", "line-password\n"
             )
             config = load_config(config_path)
 
@@ -630,8 +718,8 @@ path = /live/201
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config_path = self.write_lan_config(root)
-            (root / "input-secrets" / "yard-password").write_text(
-                "invalid\npassword", encoding="utf-8"
+            write_private_text(
+                root / "input-secrets" / "yard-password", "invalid\npassword"
             )
             config = load_config(config_path)
             staging = root / "staging"

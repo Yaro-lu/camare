@@ -51,15 +51,26 @@ class RuntimeCommandRunner:
         *,
         cwd: Path,
         timeout: float,
-    ) -> None:
+    ) -> object:
+        is_capability_probe = arguments == (
+            "docker",
+            "compose",
+            "up",
+            "--help",
+        )
         try:
             completed = subprocess.run(
                 arguments,
                 cwd=cwd,
                 check=False,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=(
+                    subprocess.PIPE if is_capability_probe else subprocess.DEVNULL
+                ),
+                stderr=(
+                    subprocess.PIPE if is_capability_probe else subprocess.DEVNULL
+                ),
+                text=is_capability_probe,
                 timeout=timeout,
             )
         except FileNotFoundError as error:
@@ -68,6 +79,7 @@ class RuntimeCommandRunner:
             raise CLIError("Docker Compose command timed out") from error
         if completed.returncode != 0:
             raise CLIError("Docker Compose rejected the rendered deployment")
+        return completed
 
 
 def _add_common_options(parser: argparse.ArgumentParser) -> None:

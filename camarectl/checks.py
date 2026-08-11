@@ -217,6 +217,30 @@ def run_doctor(
     else:
         results.append(CheckResult("FAIL", "docker.compose", "Docker Compose v2 is required"))
 
+    compose_up_help = command_runner.run(
+        ("docker", "compose", "up", "--help"),
+        timeout=5,
+    )
+    compose_wait_available = (
+        compose_up_help.returncode == 0
+        and re.search(
+            r"(?m)^\s*--wait(?:\s|$)",
+            compose_up_help.stdout,
+        )
+        is not None
+    )
+    results.append(
+        CheckResult(
+            "PASS" if compose_wait_available else "FAIL",
+            "docker.compose.wait",
+            (
+                "Docker Compose can wait for service health"
+                if compose_wait_available
+                else "Docker Compose up --wait is required"
+            ),
+        )
+    )
+
     timezone_path = PurePosixPath("/usr/share/zoneinfo") / config.timezone
     timezone_status = paths.inspect(timezone_path)
     if timezone_status.exists and timezone_status.is_file and timezone_status.readable:

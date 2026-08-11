@@ -33,6 +33,7 @@ Accepted
 
 - Cloudflare Published application 的内部服务地址仍是 `http://camera-portal:8080`。
 - 录像目录不进入运行根，因此备份配置默认不包含录像。
+- 本地 Compose `file:` secret 保留宿主 UID/GID/mode；manifest 负责把每个运行 secret 收紧到实际消费容器的数值身份，不能只依赖 Compose long syntax。
 
 ## Alternatives Considered
 

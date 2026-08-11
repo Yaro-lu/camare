@@ -2,7 +2,7 @@
 
 卸载按单个 `camare_<instance-id>` 限定范围。默认只做 dry-run；普通执行只移除该 project 的容器和网络，并完整保留可重新安装的运行目录；只有显式 purge 才删除受管控制、运行 secret 和 Portal/Frigate 持久数据。外部媒体目录和录像永远不在删除范围。
 
-> 先做 [应用状态备份](backup-restore.md) 和独立密钥/录像备份。生命周期核心已通过本地自动化测试，Linux 隔离 E2E 待执行。
+> 先做 [应用状态备份](backup-restore.md) 和独立密钥/录像备份。生命周期核心已通过自动化测试及 Linux 合成流隔离 E2E；这不替代对目标实例的 dry-run 和备份验证。
 
 卸载与 `apply`、backup、restore 共用实例锁。不要在升级或恢复进行中并发卸载，也不要通过删除 lock 文件绕过保护。
 

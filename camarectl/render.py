@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets as secrets_module
 import shutil
@@ -47,7 +48,10 @@ def _write(path: Path, content: str | bytes, mode: int) -> None:
     data = content.encode("utf-8") if isinstance(content, str) else content
     with path.open("xb") as handle:
         handle.write(data)
-    path.chmod(mode)
+    # Windows maps a missing owner-write bit to the read-only attribute, which
+    # prevents failure cleanup in local (non-deployable) test/plan renders.
+    # Linux, the only deployment host, receives the exact requested mode.
+    path.chmod(mode if os.name != "nt" else mode | 0o200)
 
 
 def _read_camera_password(path: Path, label: str) -> str:
@@ -268,7 +272,10 @@ def render_runtime(
             "  lan_access_key:",
             "    file: ./secrets/lan-access-key",
         ]
-        _write(layout.secrets / "lan-access-key", access_key, 0o600)
+        # Local Compose file secrets retain host ownership and mode because they
+        # are bind-mounted.  Portal runs with GID 65532 and LAN Caddy receives
+        # only that supplementary group, so this one shared key needs group-read.
+        _write(layout.secrets / "lan-access-key", access_key, 0o440)
         for group, (secret_name, secret_target, runtime_name) in zip(
             groups, secret_specs
         ):
@@ -298,11 +305,12 @@ def render_runtime(
             _write(
                 layout.secrets / "cloudflare-token",
                 _read_token(token_path, "cloudflare_token_file"),
-                0o600,
+                0o400,
             )
             cloudflared_service = """  cloudflared:
     image: "${CLOUDFLARED_IMAGE:?set CLOUDFLARED_IMAGE in .env}"
     restart: unless-stopped
+    user: "65532:65532"
     init: true
     read_only: true
     cap_drop:
@@ -416,6 +424,37 @@ def render_runtime(
             *(() if layout.intel_compose is None else (layout.intel_compose,)),
             layout.caddyfile,
         ]
+        required_ownership: dict[str, dict[str, int | str]] = {
+            "portal-data": {
+                "uid": 65532,
+                "gid": 65532,
+                "mode": "0750",
+            },
+            "secrets": {
+                "uid": 0,
+                "gid": 0,
+                "mode": "0700",
+            },
+            "secrets/lan-access-key": {
+                "uid": 0,
+                "gid": 65532,
+                "mode": "0440",
+            },
+        }
+        root_only_secret = {"uid": 0, "gid": 0, "mode": "0600"}
+        for _, _, runtime_name in secret_specs:
+            required_ownership[
+                f"secrets/{runtime_name.as_posix()}"
+            ] = root_only_secret.copy()
+        if config.provider == "cloudflare":
+            # The pinned official cloudflared image runs as 65532:65532.  Owner
+            # read keeps the token private without promoting the container to root.
+            required_ownership["secrets/cloudflare-token"] = {
+                "uid": 65532,
+                "gid": 65532,
+                "mode": "0400",
+            }
+
         manifest = {
             "format_version": 2,
             "instance_id": config.instance_id,
@@ -435,13 +474,7 @@ def render_runtime(
             # managed, backed-up regular file, but its initial digest cannot be
             # treated as immutable after deployment.
             "mutable_files": ["frigate/config.yml"],
-            "required_ownership": {
-                "portal-data": {
-                    "uid": 65532,
-                    "gid": 65532,
-                    "mode": "0750",
-                }
-            },
+            "required_ownership": required_ownership,
         }
         _write(
             layout.manifest,

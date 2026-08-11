@@ -116,6 +116,11 @@ services:
         export LAN_ACCESS_KEY="$$(cat /run/secrets/LAN_ACCESS_KEY)";
         exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
     user: "1000:1000"
+    # Compose implements local file secrets as bind mounts, so the host file's
+    # numeric group controls access.  This supplementary group is scoped to the
+    # shared LAN access key; the container still runs as UID/GID 1000.
+    group_add:
+      - "65532"
     read_only: true
     cap_drop:
       - ALL

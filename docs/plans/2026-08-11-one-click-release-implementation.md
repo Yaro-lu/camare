@@ -57,7 +57,7 @@
 **Steps:**
 1. 写失败测试，渲染到临时 `/opt/camare/test` 等价目录，断言源码文件哈希不变、秘密不进入 `.env/config.yml`、Compose 无固定名称、网络由 project 隔离、CPU 不映射 GPU、Intel override 精确映射 render device。
 2. 写四路两组快照测试，断言 go2rtc/cameras、Portal `CAMERAS/CAMERA_GROUPS`、每组录音 preset 和 Docker secrets 正确。
-3. 实现原子暂存渲染、`0600` secret/`.env`、`0640` Frigate config、manifest 哈希和三份精确备份。
+3. 实现原子暂存渲染、`0600` 输入 secret/`.env`、按消费容器身份收紧的运行 secret、`0640` Frigate config、manifest 哈希和三份精确备份。
 4. 用 `docker compose --project-name camare_test --env-file ... -f ... config --quiet` 验证渲染结果。
 5. 提交 `feat: render isolated single-stack deployments`。
 

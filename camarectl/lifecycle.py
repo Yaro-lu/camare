@@ -21,6 +21,14 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Callable, Protocol
 
+from .ownership import (
+    OwnershipPolicyError,
+    OwnershipRequirement,
+    OwnershipSetter,
+    parse_required_ownership,
+    replay_required_ownership,
+)
+
 
 BACKUP_FORMAT_VERSION = 1
 RUNTIME_FORMAT_VERSION = 2
@@ -217,6 +225,7 @@ class _RuntimeManifest:
     compose_files: tuple[PurePosixPath, ...]
     control_files: tuple[PurePosixPath, ...]
     format_version: int
+    required_ownership: tuple[OwnershipRequirement, ...]
 
     @property
     def project_name(self) -> str:
@@ -269,7 +278,11 @@ def _allowed_control(relative: PurePosixPath) -> bool:
     }
 
 
-def _load_runtime_manifest(root: Path) -> _RuntimeManifest:
+def _load_runtime_manifest(
+    root: Path,
+    *,
+    allow_legacy_ownership: bool = False,
+) -> _RuntimeManifest:
     if _is_link(root) or not root.is_dir():
         raise LifecycleError("instance root is missing or is an unsafe symlink")
     manifest_path = root / "manifest.json"
@@ -333,11 +346,21 @@ def _load_runtime_manifest(root: Path) -> _RuntimeManifest:
         if not _allowed_control(relative) or _is_link(path) or not path.is_file():
             raise LifecycleError(f"runtime mutable control is missing or unsafe: {relative}")
         controls.append(relative)
+    try:
+        required_ownership = parse_required_ownership(
+            document,
+            allow_legacy=allow_legacy_ownership,
+        ).requirements
+    except OwnershipPolicyError as error:
+        raise LifecycleError(
+            f"runtime ownership policy is invalid: {error}"
+        ) from error
     return _RuntimeManifest(
         instance_id=instance_id,
         compose_files=compose,
         control_files=tuple(sorted(controls)),
         format_version=format_version,
+        required_ownership=required_ownership,
     )
 
 
@@ -531,7 +554,7 @@ def _backup_instance_unlocked(
     if _is_link(raw_instance):
         raise LifecycleError("instance root is an unsafe symlink")
     instance = raw_instance.resolve()
-    manifest = _load_runtime_manifest(instance)
+    manifest = _load_runtime_manifest(instance, allow_legacy_ownership=True)
     if PurePosixPath(".env") in manifest.control_files:
         _assert_nonsecret_env(instance / ".env")
     required_secret_names = _required_secret_names(instance)
@@ -863,6 +886,53 @@ def _run_compose(
     return runner(arguments, cwd=root, timeout=timeout)
 
 
+def _require_compose_wait(
+    runner: CommandRunner,
+    root: Path,
+    timeout: float,
+) -> None:
+    """Fail closed before mutation unless Compose advertises standalone --wait."""
+
+    try:
+        result = runner(
+            ("docker", "compose", "up", "--help"),
+            cwd=root,
+            timeout=timeout,
+        )
+    except Exception as error:
+        raise LifecycleError(
+            "Docker Compose --wait capability could not be verified"
+        ) from error
+    returncode = getattr(result, "returncode", None)
+    stdout = getattr(result, "stdout", "")
+    stderr = getattr(result, "stderr", "")
+    help_text = "\n".join(
+        value for value in (stdout, stderr) if isinstance(value, str)
+    )
+    if returncode != 0 or re.search(r"(?<![\w-])--wait(?![\w-])", help_text) is None:
+        raise LifecycleError(
+            "Docker Compose must support the standalone --wait option"
+        )
+
+
+def _default_ownership(path: Path, uid: int, gid: int, mode: int) -> None:
+    if os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0:
+        raise LifecycleError("replaying runtime ownership requires Linux root")
+    os.chown(path, uid, gid, follow_symlinks=False)
+    path.chmod(mode, follow_symlinks=False)
+
+
+def _replay_manifest_ownership(
+    root: Path,
+    manifest: _RuntimeManifest,
+    ownership: OwnershipSetter,
+) -> None:
+    try:
+        replay_required_ownership(root, manifest.required_ownership, ownership)
+    except (OSError, OwnershipPolicyError) as error:
+        raise LifecycleError("runtime ownership could not be replayed safely") from error
+
+
 def _safe_restore_target(root: Path, relative: PurePosixPath) -> Path:
     current = root
     for part in relative.parts:
@@ -1043,6 +1113,7 @@ def _restore_instance_unlocked(
     command_timeout: float = 120.0,
     replace: Replace = os.replace,
     verifier: Verifier | None = None,
+    ownership: OwnershipSetter | None = None,
 ) -> RestoreResult:
     """Validate a backup and, only with ``apply=True``, restore it."""
 
@@ -1054,7 +1125,7 @@ def _restore_instance_unlocked(
         raise LifecycleError("restore target is an unsafe symlink")
     target = raw_target.resolve()
     archive = _load_backup(backup)
-    current = _load_runtime_manifest(target)
+    current = _load_runtime_manifest(target, allow_legacy_ownership=True)
     if current.instance_id != archive.instance_id:
         raise LifecycleError("backup instance_id does not match the target")
     _validate_required_secrets(target, archive.required_secret_names)
@@ -1072,6 +1143,9 @@ def _restore_instance_unlocked(
         raise LifecycleError("restore apply requires a command runner")
     if backup == target or backup in target.parents or target in backup.parents:
         raise LifecycleError("backup and target roots must be separate")
+
+    _require_compose_wait(runner, target, command_timeout)
+    ownership_setter = ownership or _default_ownership
 
     staging = _stage_restore(backup, target, archive)
     rollback: Path | None = None
@@ -1093,11 +1167,12 @@ def _restore_instance_unlocked(
             )
         except BaseException as stop_error:
             try:
+                _replay_manifest_ownership(target, current, ownership_setter)
                 _run_compose(
                     runner,
                     target,
                     current,
-                    ("up", "-d", "--no-build"),
+                    ("up", "-d", "--no-build", "--wait", "--remove-orphans"),
                     command_timeout,
                 )
             except BaseException as recovery_error:
@@ -1134,15 +1209,19 @@ def _restore_instance_unlocked(
                 if _is_link(path) or (path.exists() and not path.is_file()):
                     raise LifecycleError(f"unsafe SQLite sidecar: {sidecar}")
                 path.unlink(missing_ok=True)
-        restored_manifest = _load_runtime_manifest(target)
+        restored_manifest = _load_runtime_manifest(
+            target,
+            allow_legacy_ownership=True,
+        )
         if restored_manifest.instance_id != archive.instance_id:
             raise LifecycleError("restored controls changed the instance_id")
+        _replay_manifest_ownership(target, restored_manifest, ownership_setter)
         restored_start_attempted = True
         _run_compose(
             runner,
             target,
             restored_manifest,
-            ("up", "-d", "--no-build"),
+            ("up", "-d", "--no-build", "--wait", "--remove-orphans"),
             command_timeout,
         )
         verified = False
@@ -1184,12 +1263,16 @@ def _restore_instance_unlocked(
                         target_metadata,
                         replace,
                     )
-                previous = _load_runtime_manifest(target)
+                previous = _load_runtime_manifest(
+                    target,
+                    allow_legacy_ownership=True,
+                )
+                _replay_manifest_ownership(target, previous, ownership_setter)
                 _run_compose(
                     runner,
                     target,
                     previous,
-                    ("up", "-d", "--no-build"),
+                    ("up", "-d", "--no-build", "--wait", "--remove-orphans"),
                     command_timeout,
                 )
             except BaseException as recovery_error:
@@ -1223,6 +1306,7 @@ def restore_instance(
     command_timeout: float = 120.0,
     replace: Replace = os.replace,
     verifier: Verifier | None = None,
+    ownership: OwnershipSetter | None = None,
 ) -> RestoreResult:
     """Validate or restore an instance while holding the shared apply lock."""
 
@@ -1235,6 +1319,7 @@ def restore_instance(
             command_timeout=command_timeout,
             replace=replace,
             verifier=verifier,
+            ownership=ownership,
         )
 
 
@@ -1294,6 +1379,7 @@ def _uninstall_instance_unlocked(
     purge_data: bool = False,
     command_timeout: float = 120.0,
     replace: Replace = os.replace,
+    ownership: OwnershipSetter | None = None,
 ) -> UninstallResult:
     """Plan or execute an instance-scoped uninstall; media is never in scope."""
 
@@ -1303,7 +1389,7 @@ def _uninstall_instance_unlocked(
     if _is_link(raw_target):
         raise LifecycleError("uninstall target is an unsafe symlink")
     target = raw_target.resolve()
-    manifest = _load_runtime_manifest(target)
+    manifest = _load_runtime_manifest(target, allow_legacy_ownership=True)
     controls = _uninstall_control_paths(target, manifest)
     data = _persistent_data_paths(target)
     if not apply:
@@ -1318,6 +1404,9 @@ def _uninstall_instance_unlocked(
         )
     if runner is None:
         raise LifecycleError("uninstall apply requires a command runner")
+
+    _require_compose_wait(runner, target, command_timeout)
+    ownership_setter = ownership or _default_ownership
 
     removals = (
         tuple(sorted(set(controls).union(data))) if purge_data else ()
@@ -1379,11 +1468,12 @@ def _uninstall_instance_unlocked(
                 _is_link(path) or path.is_file() for path in quarantine.rglob("*")
             ):
                 raise LifecycleError("quarantine still contains unrecovered files")
+            _replay_manifest_ownership(target, manifest, ownership_setter)
             _run_compose(
                 runner,
                 target,
                 manifest,
-                ("up", "-d", "--no-build"),
+                ("up", "-d", "--no-build", "--wait", "--remove-orphans"),
                 command_timeout,
             )
         except BaseException as recovery_error:
@@ -1439,6 +1529,7 @@ def uninstall_instance(
     purge_data: bool = False,
     command_timeout: float = 120.0,
     replace: Replace = os.replace,
+    ownership: OwnershipSetter | None = None,
 ) -> UninstallResult:
     """Plan or uninstall an instance while holding the shared apply lock."""
 
@@ -1450,4 +1541,5 @@ def uninstall_instance(
             purge_data=purge_data,
             command_timeout=command_timeout,
             replace=replace,
+            ownership=ownership,
         )

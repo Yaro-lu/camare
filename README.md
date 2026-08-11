@@ -2,7 +2,7 @@
 
 Camare 把 H.264 RTSP 摄像头、Frigate、家庭观看网页和可选公网入口整理成一个可重复生成的 Docker Compose 实例。Frigate 负责连续录像、直播和回放；Camera Portal 提供适合手机与电脑的分组双画面；录像始终直接读取同一媒体目录，不复制第二份。
 
-> 发行状态：声明式配置、渲染、事务更新、健康检查和应用层测试已通过本地自动化测试；**Linux 隔离 E2E 尚待执行**。当前仓库还不是“已在所有设备上一键验证”的正式发行版，请先在隔离目录测试，再接入生产摄像头和录像。
+> 发行状态：声明式配置、渲染、事务更新、健康检查和应用层测试已通过自动化测试；Linux x86-64 / CPU / 两路合成 H.264 的隔离 Docker E2E 已通过。真实摄像头、Intel VAAPI、NAS 重连、ARM 和跨手机矩阵仍需分别验证；当前尚未发布正式版本。
 
 ## 能做什么
 
@@ -16,7 +16,7 @@ Camare 把 H.264 RTSP 摄像头、Frigate、家庭观看网页和可选公网入
 
 ## 5 分钟 Quickstart
 
-前提：Linux x86-64、Python 3.10+、Docker Engine、Docker Compose v2、可写且已挂载的录像目录，以及可从服务器访问的 H.264 RTSP 地址。第一次建议使用 `provider = lan`，公网入口后续再加。
+前提：Linux x86-64、Python 3.10+、Docker Engine、支持 `docker compose up --wait` 的 Docker Compose v2、可写且已挂载的录像目录，以及可从服务器访问的 H.264 RTSP 地址。第一次建议使用 `provider = lan`，公网入口后续再加。
 
 ```sh
 git clone https://github.com/Yaro-lu/camare.git
@@ -67,7 +67,7 @@ flowchart LR
 
 - LAN 入口没有用户认证。只绑定服务器真实的 RFC1918 IPv4，绝不能写成全地址端口映射，也不要做路由器端口转发。
 - Frigate `5000`、go2rtc `1984`、Portal 管理端和 LAN 端口都不能交给公网 Tunnel/Funnel。
-- 摄像头密码、Cloudflare token 和其他密钥只能放在权限 `0600` 的独立文件中；不要提交到 Git、Issue、截图或日志。
+- 摄像头密码和 Cloudflare token 的**输入文件**必须是独立的 `0600` 文件；不要提交到 Git、Issue、截图或日志。运行目录内由 Camare 生成的 LAN 代理共享 key 使用受限的容器组读取权限，具体边界见安全指南。
 - 默认不录音。开启 `record_audio = true` 只影响该组之后的新录像，并可能涉及告知、隐私和当地法律义务。
 - Camare 不修改路由器、DHCP、DNS、Mihomo、防火墙、IPv6、磁盘分区或挂载配置，也不会删除、移动或复制录像。
 - 不要执行 `docker compose down -v`、`docker system prune` 或任何全局清理命令。
@@ -78,7 +78,7 @@ flowchart LR
 
 | 项目 | 当前状态 |
 |---|---|
-| 主机 | Linux x86-64；Python 3.10+；Docker Compose v2 |
+| 主机 | Linux x86-64；Python 3.10+；支持 `up --wait` 的 Docker Compose v2 |
 | 摄像头 | H.264 RTSP；1–2 组，每组 1–2 路 |
 | 解码 | CPU 或 Intel VAAPI（`i965` / `iHD`） |
 | 录像 | 现有本地目录或已由系统稳定挂载的 NAS 目录 |
@@ -130,7 +130,7 @@ sudo ./install.sh legacy --help
 ## 项目状态
 
 - 本地 Python、Go、Node、配置渲染和安全策略自动化测试已覆盖主要逻辑。
-- Linux 隔离 E2E、真实 Docker 构建/启动验收和正式 Release 发布仍待执行。
+- Linux x86-64 / CPU / 两路合成 H.264 的 Docker 构建、录像、回放、备份、恢复和卸载 E2E 已通过；正式 Release 与真实设备矩阵仍待完成。
 - 项目不是 360、Frigate、Cloudflare 或 Tailscale 的官方产品。
 
 许可证见 [LICENSE](LICENSE)，上游组件见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，变更见 [CHANGELOG.md](CHANGELOG.md)。

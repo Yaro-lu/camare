@@ -50,7 +50,7 @@ camare_compose exec -T frigate wget -qO- http://127.0.0.1:1984/api/streams
 | code 前缀 | 检查方向 |
 |---|---|
 | `platform.*` / `python.*` | 必须是 Linux x86-64、Python 3.10+ |
-| `docker.*` | Docker daemon 与 Compose v2；普通用户可能无 socket 权限 |
+| `docker.*` | Docker daemon、Compose v2 与 `docker compose up --wait`；普通用户可能无 socket 权限 |
 | `runtime.path` | `/opt/1panel/docker/compose` 或现有实例目录不可写 |
 | `media.*` | 媒体目录不存在、不可写、未挂载或空间过低 |
 | `hardware.vaapi` | render device 不是可读写字符设备，或配置驱动不匹配 |

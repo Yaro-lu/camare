@@ -25,6 +25,29 @@ def _write_sqlite(path: Path, value: str) -> None:
         connection.commit()
 
 
+def _wait_help_result() -> object:
+    return type(
+        "CommandResult",
+        (),
+        {"returncode": 0, "stdout": "  --wait  Wait for services\n", "stderr": ""},
+    )()
+
+
+def _set_strict_ownership_manifest(runtime: Path) -> None:
+    (runtime / "secrets/lan-access-key").write_text(
+        "lan-only-key", encoding="utf-8"
+    )
+    manifest_path = runtime / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["required_ownership"] = {
+        "portal-data": {"uid": 65532, "gid": 65532, "mode": "0750"},
+        "secrets": {"uid": 0, "gid": 0, "mode": "0700"},
+        "secrets/lan-access-key": {"uid": 0, "gid": 65532, "mode": "0440"},
+        "secrets/camera-password-1": {"uid": 0, "gid": 0, "mode": "0600"},
+    }
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+
 def _runtime(root: Path, instance_id: str = "home") -> tuple[Path, Path]:
     runtime = root / f"camare-{instance_id}"
     (runtime / "frigate").mkdir(parents=True)
@@ -51,9 +74,6 @@ def _runtime(root: Path, instance_id: str = "home") -> tuple[Path, Path]:
             if relative != "frigate/config.yml"
         },
         "mutable_files": ["frigate/config.yml"],
-        "required_ownership": {
-            "portal-data": {"uid": 65532, "gid": 65532, "mode": "0750"}
-        },
     }
     (runtime / "manifest.json").write_text(
         json.dumps(manifest, sort_keys=True), encoding="utf-8"
@@ -279,15 +299,53 @@ class BackupLifecycleTests(unittest.TestCase):
 class FakeRunner:
     def __init__(self) -> None:
         self.calls: list[tuple[tuple[str, ...], Path, float]] = []
+        self.probes: list[tuple[tuple[str, ...], Path, float]] = []
+
+    def __call__(
+        self, arguments: tuple[str, ...], *, cwd: Path, timeout: float
+    ) -> object:
+        if arguments == ("docker", "compose", "up", "--help"):
+            self.probes.append((arguments, cwd, timeout))
+            return _wait_help_result()
+        self.calls.append((arguments, cwd, timeout))
+        return object()
+
+
+class HelpOnlyRunner:
+    def __init__(self, help_text: str) -> None:
+        self.help_text = help_text
+        self.calls: list[tuple[tuple[str, ...], Path, float]] = []
 
     def __call__(
         self, arguments: tuple[str, ...], *, cwd: Path, timeout: float
     ) -> object:
         self.calls.append((arguments, cwd, timeout))
-        return object()
+        return type(
+            "CommandResult",
+            (),
+            {"returncode": 0, "stdout": self.help_text, "stderr": ""},
+        )()
 
 
 class RestoreLifecycleTests(unittest.TestCase):
+    def test_restore_requires_compose_wait_before_stopping_or_replacing_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime, _ = _runtime(root)
+            backup = root / "backups" / "known-good"
+            backup_instance(runtime, backup)
+            state = runtime / "portal-data/state.json"
+            state.write_text('{"devices":["changed"]}', encoding="utf-8")
+            before = state.read_bytes()
+            runner = HelpOnlyRunner("Usage: docker compose up [OPTIONS]\n")
+
+            with self.assertRaisesRegex(Exception, "--wait"):
+                restore_instance(backup, runtime, runner=runner, apply=True)
+
+            self.assertEqual(state.read_bytes(), before)
+            self.assertEqual(len(runner.calls), 1)
+            self.assertEqual(runner.calls[0][0], ("docker", "compose", "up", "--help"))
+
     def test_restore_is_a_validated_dry_run_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -351,9 +409,151 @@ class RestoreLifecycleTests(unittest.TestCase):
             self.assertEqual(len(runner.calls), 2)
             self.assertEqual(runner.calls[0][0][-3:], ("stop", "camera-portal", "frigate"))
             self.assertEqual(
-                runner.calls[1][0][-3:], ("up", "-d", "--no-build")
+                runner.calls[1][0][-5:],
+                ("up", "-d", "--no-build", "--wait", "--remove-orphans"),
             )
             self.assertNotIn("-v", runner.calls[0][0] + runner.calls[1][0])
+
+    def test_restore_replays_strict_manifest_ownership_before_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime, _ = _runtime(root)
+            _set_strict_ownership_manifest(runtime)
+            backup = root / "backups" / "known-good"
+            backup_instance(runtime, backup)
+            events: list[tuple[object, ...]] = []
+
+            class OrderedRunner(FakeRunner):
+                def __call__(
+                    self,
+                    arguments: tuple[str, ...],
+                    *,
+                    cwd: Path,
+                    timeout: float,
+                ) -> object:
+                    result = super().__call__(arguments, cwd=cwd, timeout=timeout)
+                    if arguments != ("docker", "compose", "up", "--help"):
+                        events.append(("compose", *arguments[-5:]))
+                    return result
+
+            def record_ownership(path: Path, uid: int, gid: int, mode: int) -> None:
+                events.append(
+                    ("ownership", path.relative_to(runtime).as_posix(), uid, gid, mode)
+                )
+
+            restore_instance(
+                backup,
+                runtime,
+                runner=OrderedRunner(),
+                apply=True,
+                ownership=record_ownership,
+            )
+
+            expected = {
+                ("ownership", "portal-data", 65532, 65532, 0o750),
+                ("ownership", "secrets", 0, 0, 0o700),
+                ("ownership", "secrets/lan-access-key", 0, 65532, 0o440),
+                ("ownership", "secrets/camera-password-1", 0, 0, 0o600),
+            }
+            ownership_events = {event for event in events if event[0] == "ownership"}
+            self.assertEqual(ownership_events, expected)
+            first_up = next(index for index, event in enumerate(events) if "up" in event)
+            self.assertTrue(
+                all(events.index(event) < first_up for event in ownership_events)
+            )
+
+    def test_restore_replays_restored_strict_and_rollback_legacy_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime, _ = _runtime(root)
+            _set_strict_ownership_manifest(runtime)
+            backup = root / "backups" / "known-good"
+            backup_instance(runtime, backup)
+
+            manifest_path = runtime / "manifest.json"
+            current = json.loads(manifest_path.read_text(encoding="utf-8"))
+            current["required_ownership"] = {
+                "portal-data": {"uid": 65532, "gid": 65532, "mode": "0750"}
+            }
+            manifest_path.write_text(json.dumps(current), encoding="utf-8")
+            events: list[tuple[object, ...]] = []
+
+            class OrderedRunner(FakeRunner):
+                def __call__(
+                    self,
+                    arguments: tuple[str, ...],
+                    *,
+                    cwd: Path,
+                    timeout: float,
+                ) -> object:
+                    result = super().__call__(arguments, cwd=cwd, timeout=timeout)
+                    if arguments != ("docker", "compose", "up", "--help"):
+                        events.append(("compose", *arguments[-5:]))
+                    return result
+
+            def record_ownership(path: Path, uid: int, gid: int, mode: int) -> None:
+                events.append(
+                    ("ownership", path.relative_to(runtime).as_posix(), uid, gid, mode)
+                )
+
+            with self.assertRaisesRegex(Exception, "verification failed"):
+                restore_instance(
+                    backup,
+                    runtime,
+                    runner=OrderedRunner(),
+                    apply=True,
+                    verifier=lambda _target: False,
+                    ownership=record_ownership,
+                )
+
+            ownership_paths = [event[1] for event in events if event[0] == "ownership"]
+            self.assertCountEqual(
+                ownership_paths[:4],
+                [
+                    "portal-data",
+                    "secrets",
+                    "secrets/camera-password-1",
+                    "secrets/lan-access-key",
+                ],
+            )
+            self.assertEqual(ownership_paths[4:], ["portal-data"])
+            up_positions = [
+                index
+                for index, event in enumerate(events)
+                if event[0] == "compose" and "up" in event
+            ]
+            ownership_positions = [
+                index
+                for index, event in enumerate(events)
+                if event[0] == "ownership"
+            ]
+            self.assertEqual(len(up_positions), 2)
+            self.assertTrue(
+                all(index < up_positions[0] for index in ownership_positions[:4])
+            )
+            self.assertLess(up_positions[0], ownership_positions[4])
+            self.assertLess(ownership_positions[4], up_positions[1])
+
+    def test_incomplete_strict_ownership_manifest_fails_before_probe_or_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime, _ = _runtime(root)
+            _set_strict_ownership_manifest(runtime)
+            backup = root / "backups" / "known-good"
+            backup_instance(runtime, backup)
+            manifest_path = runtime / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            del manifest["required_ownership"]["secrets/lan-access-key"]
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            before = manifest_path.read_bytes()
+            runner = FakeRunner()
+
+            with self.assertRaisesRegex(Exception, "ownership policy"):
+                restore_instance(backup, runtime, runner=runner, apply=True)
+
+            self.assertEqual(manifest_path.read_bytes(), before)
+            self.assertEqual(runner.probes, [])
+            self.assertEqual(runner.calls, [])
 
     @unittest.skipUnless(os.name == "posix", "POSIX ownership and modes")
     def test_restore_reapplies_safe_modes_and_parent_ownership(self) -> None:
@@ -477,7 +677,10 @@ class RestoreLifecycleTests(unittest.TestCase):
                     ("keep-current-index",),
                 )
             self.assertEqual(runner.calls[0][0][-3:], ("stop", "camera-portal", "frigate"))
-            self.assertEqual(runner.calls[-1][0][-3:], ("up", "-d", "--no-build"))
+            self.assertEqual(
+                runner.calls[-1][0][-5:],
+                ("up", "-d", "--no-build", "--wait", "--remove-orphans"),
+            )
 
     def test_failed_post_start_verification_rolls_back_and_restarts_without_building(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -513,11 +716,17 @@ class RestoreLifecycleTests(unittest.TestCase):
                 current_state,
             )
             self.assertEqual(len(runner.calls), 4)
-            self.assertEqual(runner.calls[1][0][-3:], ("up", "-d", "--no-build"))
+            self.assertEqual(
+                runner.calls[1][0][-5:],
+                ("up", "-d", "--no-build", "--wait", "--remove-orphans"),
+            )
             self.assertEqual(
                 runner.calls[2][0][-3:], ("stop", "camera-portal", "frigate")
             )
-            self.assertEqual(runner.calls[3][0][-3:], ("up", "-d", "--no-build"))
+            self.assertEqual(
+                runner.calls[3][0][-5:],
+                ("up", "-d", "--no-build", "--wait", "--remove-orphans"),
+            )
 
     def test_uncertain_stop_failure_reasserts_previous_project_without_building(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -530,6 +739,8 @@ class RestoreLifecycleTests(unittest.TestCase):
             def fail_stop(
                 arguments: tuple[str, ...], *, cwd: Path, timeout: float
             ) -> object:
+                if arguments == ("docker", "compose", "up", "--help"):
+                    return _wait_help_result()
                 calls.append(arguments)
                 if "stop" in arguments:
                     raise RuntimeError("partial Docker stop")
@@ -539,7 +750,10 @@ class RestoreLifecycleTests(unittest.TestCase):
                 restore_instance(backup, runtime, runner=fail_stop, apply=True)
 
             self.assertEqual(calls[0][-3:], ("stop", "camera-portal", "frigate"))
-            self.assertEqual(calls[1][-3:], ("up", "-d", "--no-build"))
+            self.assertEqual(
+                calls[1][-5:],
+                ("up", "-d", "--no-build", "--wait", "--remove-orphans"),
+            )
             self.assertEqual(
                 (runtime / "portal-data/state.json").read_text(encoding="utf-8"),
                 '{"devices":["phone"]}',
@@ -560,8 +774,14 @@ class RestoreLifecycleTests(unittest.TestCase):
             def fail_first_start(
                 arguments: tuple[str, ...], *, cwd: Path, timeout: float
             ) -> object:
+                if arguments == ("docker", "compose", "up", "--help"):
+                    return _wait_help_result()
                 calls.append(arguments)
-                if arguments[-3:] == ("up", "-d", "--no-build") and len(calls) == 2:
+                if (
+                    arguments[-5:]
+                    == ("up", "-d", "--no-build", "--wait", "--remove-orphans")
+                    and len(calls) == 2
+                ):
                     raise RuntimeError("uncertain restored start")
                 return object()
 
@@ -569,9 +789,15 @@ class RestoreLifecycleTests(unittest.TestCase):
                 restore_instance(backup, runtime, runner=fail_first_start, apply=True)
 
             self.assertEqual(calls[0][-3:], ("stop", "camera-portal", "frigate"))
-            self.assertEqual(calls[1][-3:], ("up", "-d", "--no-build"))
+            self.assertEqual(
+                calls[1][-5:],
+                ("up", "-d", "--no-build", "--wait", "--remove-orphans"),
+            )
             self.assertEqual(calls[2][-3:], ("stop", "camera-portal", "frigate"))
-            self.assertEqual(calls[3][-3:], ("up", "-d", "--no-build"))
+            self.assertEqual(
+                calls[3][-5:],
+                ("up", "-d", "--no-build", "--wait", "--remove-orphans"),
+            )
             self.assertEqual(
                 (runtime / "portal-data/state.json").read_text(encoding="utf-8"),
                 current_state,
@@ -636,6 +862,25 @@ class RestoreLifecycleTests(unittest.TestCase):
 
 
 class UninstallLifecycleTests(unittest.TestCase):
+    def test_uninstall_requires_compose_wait_before_down_or_file_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime, _ = _runtime(root)
+            runner = HelpOnlyRunner("Usage: docker compose up [OPTIONS]\n")
+
+            with self.assertRaisesRegex(Exception, "--wait"):
+                uninstall_instance(
+                    runtime,
+                    runner=runner,
+                    apply=True,
+                    purge_data=True,
+                )
+
+            self.assertTrue((runtime / "compose.yaml").is_file())
+            self.assertTrue((runtime / "manifest.json").is_file())
+            self.assertEqual(len(runner.calls), 1)
+            self.assertEqual(runner.calls[0][0], ("docker", "compose", "up", "--help"))
+
     def test_uninstall_is_a_non_mutating_instance_scoped_plan_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -724,6 +969,8 @@ class UninstallLifecycleTests(unittest.TestCase):
             def fail_runner(
                 arguments: tuple[str, ...], *, cwd: Path, timeout: float
             ) -> object:
+                if arguments == ("docker", "compose", "up", "--help"):
+                    return _wait_help_result()
                 raise RuntimeError(f"Docker unavailable for {arguments[-1]}")
 
             with self.assertRaisesRegex(Exception, "containers could not be removed"):
@@ -739,8 +986,10 @@ class UninstallLifecycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             runtime, media = _runtime(root)
+            _set_strict_ownership_manifest(runtime)
             runner = FakeRunner()
             failed = False
+            ownership_calls: list[tuple[str, int, int, int]] = []
 
             def fail_once(source: Path, destination: Path) -> None:
                 nonlocal failed
@@ -749,6 +998,11 @@ class UninstallLifecycleTests(unittest.TestCase):
                     raise OSError("injected quarantine move failure")
                 source.replace(destination)
 
+            def record_ownership(path: Path, uid: int, gid: int, mode: int) -> None:
+                ownership_calls.append(
+                    (path.relative_to(runtime).as_posix(), uid, gid, mode)
+                )
+
             with self.assertRaisesRegex(Exception, "previous instance was restored"):
                 uninstall_instance(
                     runtime,
@@ -756,6 +1010,7 @@ class UninstallLifecycleTests(unittest.TestCase):
                     apply=True,
                     purge_data=True,
                     replace=fail_once,
+                    ownership=record_ownership,
                 )
 
             self.assertTrue((runtime / "manifest.json").is_file())
@@ -765,7 +1020,19 @@ class UninstallLifecycleTests(unittest.TestCase):
             self.assertEqual((media / "recording.mp4").read_bytes(), b"never-copy-media")
             self.assertEqual(len(runner.calls), 2)
             self.assertEqual(runner.calls[0][0][-2:], ("down", "--remove-orphans"))
-            self.assertEqual(runner.calls[1][0][-3:], ("up", "-d", "--no-build"))
+            self.assertEqual(
+                runner.calls[1][0][-5:],
+                ("up", "-d", "--no-build", "--wait", "--remove-orphans"),
+            )
+            self.assertEqual(
+                set(ownership_calls),
+                {
+                    ("portal-data", 65532, 65532, 0o750),
+                    ("secrets", 0, 0, 0o700),
+                    ("secrets/camera-password-1", 0, 0, 0o600),
+                    ("secrets/lan-access-key", 0, 65532, 0o440),
+                },
+            )
 
     def test_failed_purge_recovery_preserves_the_quarantined_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

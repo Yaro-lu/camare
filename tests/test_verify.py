@@ -17,6 +17,7 @@ from camarectl.model import (
 from camarectl.verify import (
     HTTPResult,
     LocalHTTPProbe,
+    OwnershipStatus,
     RecordingSnapshot,
     verify_runtime,
 )
@@ -145,6 +146,25 @@ class FakePathProbe:
                 "caddy/Caddyfile": caddy_digest,
             },
             "mutable_files": ["frigate/config.yml"],
+            "required_ownership": {
+                "portal-data": {"uid": 65532, "gid": 65532, "mode": "0750"},
+                "secrets": {"uid": 0, "gid": 0, "mode": "0700"},
+                "secrets/lan-access-key": {
+                    "uid": 0,
+                    "gid": 65532,
+                    "mode": "0440",
+                },
+                "secrets/camera-password-1": {
+                    "uid": 0,
+                    "gid": 0,
+                    "mode": "0600",
+                },
+                "secrets/cloudflare-token": {
+                    "uid": 65532,
+                    "gid": 65532,
+                    "mode": "0400",
+                },
+            },
         }
         self.read_paths: list[Path] = []
         self.digest_paths: list[Path] = []
@@ -156,6 +176,21 @@ class FakePathProbe:
             Path("C:/isolated/runtime/caddy/Caddyfile"): caddy_digest,
         }
         self.manifest_text: str | None = None
+        self.ownership: dict[Path, OwnershipStatus | None] = {
+            Path("C:/isolated/runtime/portal-data"): OwnershipStatus(
+                65532, 65532, 0o750
+            ),
+            Path("C:/isolated/runtime/secrets"): OwnershipStatus(0, 0, 0o700),
+            Path("C:/isolated/runtime/secrets/lan-access-key"): OwnershipStatus(
+                0, 65532, 0o440
+            ),
+            Path("C:/isolated/runtime/secrets/camera-password-1"): OwnershipStatus(
+                0, 0, 0o600
+            ),
+            Path("C:/isolated/runtime/secrets/cloudflare-token"): OwnershipStatus(
+                65532, 65532, 0o400
+            ),
+        }
         self.recording_calls: list[str] = []
         self.recordings: dict[str, list[RecordingSnapshot | None]] = {
             "ptz_view": [
@@ -192,6 +227,9 @@ class FakePathProbe:
         del max_bytes
         self.digest_paths.append(path)
         return self.file_digests.get(path)
+
+    def ownership_status(self, path: Path) -> OwnershipStatus | None:
+        return self.ownership.get(path)
 
 
 class FakeSleeper:
@@ -319,6 +357,7 @@ class VerifyRuntimeTests(unittest.TestCase):
     def test_tailscale_runtime_requires_only_the_three_local_services(self) -> None:
         config = deployment_config(provider="tailscale")
         self.paths.manifest["provider"] = "tailscale"
+        del self.paths.manifest["required_ownership"]["secrets/cloudflare-token"]
         self.runner.ps = [
             row for row in self.runner.ps if row["Service"] != "cloudflared"
         ]
@@ -334,6 +373,7 @@ class VerifyRuntimeTests(unittest.TestCase):
     def test_non_cloudflare_runtime_rejects_a_leftover_cloudflared_service(self) -> None:
         config = deployment_config(provider="lan")
         self.paths.manifest["provider"] = "lan"
+        del self.paths.manifest["required_ownership"]["secrets/cloudflare-token"]
 
         results = self.verify(config)
         by_code = {result.code: result for result in results}
@@ -457,6 +497,44 @@ class VerifyRuntimeTests(unittest.TestCase):
             any(result.code == "runtime.manifest" and result.level == "FAIL" for result in results)
         )
         self.assertTrue(self.runner.commands)
+
+    def test_each_declared_ownership_drift_is_reported_independently(self) -> None:
+        self.paths.ownership[self.root / "portal-data"] = OwnershipStatus(
+            1000, 65532, 0o750
+        )
+        self.paths.ownership[
+            self.root / "secrets/lan-access-key"
+        ] = OwnershipStatus(0, 65532, 0o644)
+        self.paths.ownership[self.root / "secrets/cloudflare-token"] = None
+
+        results = self.verify()
+        by_code = {result.code: result for result in results}
+
+        self.assertEqual(by_code["runtime.ownership.portal-data"].level, "FAIL")
+        self.assertEqual(
+            by_code["runtime.ownership.secrets.lan-access-key"].level,
+            "FAIL",
+        )
+        self.assertEqual(by_code["runtime.ownership.secrets"].level, "PASS")
+        self.assertEqual(
+            by_code["runtime.ownership.secrets.camera-password-1"].level,
+            "PASS",
+        )
+        self.assertEqual(
+            by_code["runtime.ownership.secrets.cloudflare-token"].level,
+            "FAIL",
+        )
+
+    def test_incomplete_strict_ownership_manifest_fails_before_runtime_probes(self) -> None:
+        del self.paths.manifest["required_ownership"]["secrets/lan-access-key"]
+
+        results = self.verify()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].code, "runtime.manifest")
+        self.assertEqual(results[0].level, "FAIL")
+        self.assertEqual(self.runner.commands, [])
+        self.assertEqual(self.http.requests, [])
 
     def test_local_http_probe_explicitly_disables_environment_proxies(self) -> None:
         class FakeResponse:

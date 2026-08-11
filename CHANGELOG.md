@@ -31,7 +31,8 @@
 - 输入密码和 Tunnel token 只从权限收紧的独立文件读取；计划、manifest 和普通输出不包含 secret 值。
 - LAN 免鉴权入口限定到明确的家庭网 IPv4；公网模式的管理页继续限定为 Tailscale Serve 身份。
 - 恢复会保留现有目标文件的 POSIX 所有权和权限；恢复或 purge 无法完整回滚时保留唯一恢复副本，不再清理它。
+- 按 Compose 本地 file secret 的 bind-mount 语义固定运行密钥所有权：摄像头密码保持 root-only，Cloudflare token 保持 cloudflared owner-only，LAN 代理 key 只对两个指定消费容器的 GID 可读。
 
 ### Verification status
 
-- 本地自动化测试已覆盖配置、渲染、事务、生命周期、Portal 和发行策略；Linux 隔离 E2E 与正式 Release 验收仍待执行。
+- 自动化测试已覆盖配置、渲染、事务、生命周期、Portal 和发行策略；Linux x86-64 / CPU / 两路合成 H.264 的隔离 Docker E2E 已通过，正式 Release 与真实设备矩阵仍待验收。

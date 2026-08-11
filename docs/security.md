@@ -48,6 +48,15 @@ Tailscale ACL、账号 MFA、节点撤销和设备安全仍由 tailnet 管理员
 
 输入密钥文件必须是普通文件且权限为 `0600`；目录建议 `0700`。不要把密码放进命令行，因为它可能进入 shell history 或进程列表。Docker group 等同于主机 root 级权限，不要为了免 `sudo` 把不可信用户加入该组。
 
+Compose 的本地 `file:` secret 实际通过 bind mount 提供，容器看到的是宿主文件的 UID、GID 和 mode；不能依赖 Compose 的 long syntax 把它改成另一套权限。因此 `apply` 会按 manifest 在**宿主机**固定运行 secret 的数值所有权：
+
+- 摄像头密码：`root:root 0600`，只由 Frigate 的 root 进程读取；
+- Cloudflare token：`65532:65532 0400`，只由官方 cloudflared 镜像的非 root UID 65532 读取；
+- 内部 `lan-access-key`：`root:65532 0440`，只让 Portal 的主组和 LAN Caddy 的同号补充组读取；
+- `secrets/` 父目录仍为 `0700`，不要把 GID 65532 分配给普通宿主机用户，也不要手工放宽或递归改权限。
+
+LAN key 不是摄像头或 Tunnel 凭证，只用于实例内固定代理访问 Portal。单文件受限组方案避免复制同一 key；Caddy 仍以 UID/GID 1000 运行，仅额外获得 GID 65532，不获得 root 或 Docker 权限。cloudflared 也使用 65532，但不加入 Caddy 的容器或网络权限边界，且 Tunnel token 仍是 owner-only `0400`。rootless Docker、user namespace remap 和自定义容器 UID/GID 当前未纳入发行兼容范围，因为它们会改变 bind mount 的数值身份映射。
+
 运行备份刻意不包含 secret 内容，只记录恢复所需的 secret 文件名。灾难恢复必须另外保存：
 
 - `camare.ini`；

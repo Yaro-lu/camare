@@ -17,6 +17,12 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, Protocol
 
 from .layout import RuntimeLayout
+from .ownership import (
+    OwnershipPolicyError,
+    OwnershipRequirement,
+    parse_required_ownership,
+    replay_required_ownership,
+)
 
 
 class ApplyError(RuntimeError):
@@ -64,16 +70,29 @@ class StagingValidation:
 class _Manifest:
     instance_id: str
     compose_files: tuple[PurePosixPath, ...]
-    required_ownership: tuple[tuple[PurePosixPath, int, int, int], ...]
+    required_ownership: tuple[OwnershipRequirement, ...]
 
     @property
     def project_name(self) -> str:
         return f"camare_{self.instance_id}"
 
 
+@dataclass(frozen=True)
+class _BackupMetadataEntry:
+    requirement: OwnershipRequirement
+    kind: str
+
+
 SAFE_INSTANCE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 RUNTIME_FORMAT_VERSION = 2
 MUTABLE_CONTROL_FILES = (PurePosixPath("frigate/config.yml"),)
+BACKUP_METADATA_NAME = ".camare-metadata.json"
+BACKUP_METADATA_VERSION = 1
+MAX_BACKUP_METADATA_BYTES = 1024 * 1024
+MANAGED_METADATA_DIRECTORIES = tuple(
+    PurePosixPath(value)
+    for value in ("portal-data", "caddy", "frigate", "secrets")
+)
 
 
 def _is_link(path: Path) -> bool:
@@ -107,7 +126,11 @@ def _local_path(root: Path, relative: PurePosixPath) -> Path:
     return root.joinpath(*relative.parts)
 
 
-def _load_manifest(root: Path) -> _Manifest:
+def _load_manifest(
+    root: Path,
+    *,
+    allow_legacy_ownership: bool = False,
+) -> _Manifest:
     manifest_path = root / "manifest.json"
     if _is_link(root) or _is_link(manifest_path):
         raise ApplyError("runtime root or manifest is an unsafe symlink")
@@ -175,36 +198,17 @@ def _load_manifest(root: Path) -> _Manifest:
         if _is_link(path) or not path.is_file():
             raise ApplyError(f"runtime mutable file is missing or unsafe: {relative}")
 
-    raw_ownership = document.get("required_ownership", {})
-    if not isinstance(raw_ownership, dict):
-        raise ApplyError("required_ownership must be an object")
-    ownership: list[tuple[PurePosixPath, int, int, int]] = []
-    for raw_relative, raw_requirement in raw_ownership.items():
-        relative = _relative_path(raw_relative, "ownership path")
-        if not isinstance(raw_requirement, dict):
-            raise ApplyError(f"invalid ownership requirement: {relative}")
-        uid = raw_requirement.get("uid")
-        gid = raw_requirement.get("gid")
-        raw_mode = raw_requirement.get("mode")
-        try:
-            mode = int(raw_mode, 8)
-        except (TypeError, ValueError) as error:
-            raise ApplyError(f"invalid ownership mode: {relative}") from error
-        if (
-            not isinstance(uid, int)
-            or isinstance(uid, bool)
-            or uid < 0
-            or not isinstance(gid, int)
-            or isinstance(gid, bool)
-            or gid < 0
-            or not 0 <= mode <= 0o777
-        ):
-            raise ApplyError(f"invalid ownership requirement: {relative}")
-        ownership.append((relative, uid, gid, mode))
+    try:
+        ownership = parse_required_ownership(
+            document,
+            allow_legacy=allow_legacy_ownership,
+        ).requirements
+    except OwnershipPolicyError as error:
+        raise ApplyError(f"runtime ownership policy is invalid: {error}") from error
     return _Manifest(
         instance_id=instance_id,
         compose_files=compose_files,
-        required_ownership=tuple(ownership),
+        required_ownership=ownership,
     )
 
 
@@ -293,11 +297,10 @@ def _apply_ownership(
     manifest: _Manifest,
     ownership: OwnershipSetter,
 ) -> None:
-    for relative, uid, gid, mode in manifest.required_ownership:
-        path = _local_path(root, relative)
-        if not path.exists() or _is_link(path):
-            raise ApplyError(f"ownership target is missing or unsafe: {relative}")
-        ownership(path, uid, gid, mode)
+    try:
+        replay_required_ownership(root, manifest.required_ownership, ownership)
+    except OwnershipPolicyError as error:
+        raise ApplyError(str(error)) from error
 
 
 @contextmanager
@@ -425,6 +428,145 @@ def _copy_atomic(source: Path, destination: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _copy_private(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    destination.parent.chmod(0o700)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.camare-backup-",
+        dir=destination.parent,
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        temporary.chmod(0o600)
+        shutil.copyfile(source, temporary)
+        temporary.chmod(0o600)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _metadata_entry(path: Path, relative: PurePosixPath) -> _BackupMetadataEntry:
+    if _is_link(path):
+        raise ApplyError(f"unsafe metadata target: {relative}")
+    try:
+        status = path.lstat()
+    except OSError as error:
+        raise ApplyError(f"metadata target is missing: {relative}") from error
+    if stat.S_ISREG(status.st_mode):
+        kind = "file"
+    elif stat.S_ISDIR(status.st_mode):
+        kind = "directory"
+    else:
+        raise ApplyError(f"metadata target is not a regular path: {relative}")
+    return _BackupMetadataEntry(
+        OwnershipRequirement(
+            relative,
+            status.st_uid,
+            status.st_gid,
+            stat.S_IMODE(status.st_mode),
+        ),
+        kind,
+    )
+
+
+def _write_backup_metadata(
+    backup: Path,
+    entries: tuple[_BackupMetadataEntry, ...],
+) -> None:
+    document = {
+        "format_version": BACKUP_METADATA_VERSION,
+        "entries": {
+            entry.requirement.path.as_posix(): {
+                "uid": entry.requirement.uid,
+                "gid": entry.requirement.gid,
+                "mode": f"0{entry.requirement.mode:03o}",
+                "kind": entry.kind,
+            }
+            for entry in entries
+        },
+    }
+    destination = backup / BACKUP_METADATA_NAME
+    descriptor = os.open(
+        destination,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    try:
+        payload = json.dumps(document, sort_keys=True).encode("utf-8")
+        with os.fdopen(descriptor, "wb", closefd=False) as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(destination, 0o600)
+    finally:
+        os.close(descriptor)
+
+
+def _load_backup_metadata(backup: Path) -> tuple[_BackupMetadataEntry, ...]:
+    metadata_path = backup / BACKUP_METADATA_NAME
+    if _is_link(metadata_path):
+        raise ApplyError("backup metadata is unsafe")
+    try:
+        status = metadata_path.lstat()
+        if not stat.S_ISREG(status.st_mode) or status.st_size > MAX_BACKUP_METADATA_BYTES:
+            raise ApplyError("backup metadata is unsafe")
+        document = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ApplyError("backup metadata is missing or invalid") from error
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"format_version", "entries"}
+        or document.get("format_version") != BACKUP_METADATA_VERSION
+        or not isinstance(document.get("entries"), dict)
+    ):
+        raise ApplyError("backup metadata is invalid")
+    controls = _control_files(backup)
+    allowed = set(controls).union(MANAGED_METADATA_DIRECTORIES)
+    entries: list[_BackupMetadataEntry] = []
+    seen: set[PurePosixPath] = set()
+    raw_entries = document["entries"]
+    assert isinstance(raw_entries, dict)
+    for raw_relative, raw_entry in raw_entries.items():
+        relative = _relative_path(raw_relative, "backup metadata path")
+        if relative not in allowed or relative in seen:
+            raise ApplyError("backup metadata has unexpected paths")
+        if not isinstance(raw_entry, dict) or set(raw_entry) != {
+            "uid",
+            "gid",
+            "mode",
+            "kind",
+        }:
+            raise ApplyError(f"invalid backup metadata: {relative}")
+        uid = raw_entry.get("uid")
+        gid = raw_entry.get("gid")
+        raw_mode = raw_entry.get("mode")
+        kind = raw_entry.get("kind")
+        expected_kind = "file" if relative in controls else "directory"
+        if (
+            not isinstance(uid, int)
+            or isinstance(uid, bool)
+            or uid < 0
+            or not isinstance(gid, int)
+            or isinstance(gid, bool)
+            or gid < 0
+            or not isinstance(raw_mode, str)
+            or re.fullmatch(r"0[0-7]{3}", raw_mode) is None
+            or kind != expected_kind
+        ):
+            raise ApplyError(f"invalid backup metadata: {relative}")
+        entries.append(
+            _BackupMetadataEntry(
+                OwnershipRequirement(relative, uid, gid, int(raw_mode, 8)),
+                expected_kind,
+            )
+        )
+        seen.add(relative)
+    if not controls.issubset(seen):
+        raise ApplyError("backup metadata does not cover all control files")
+    return tuple(entries)
+
+
 def _replace_controls(source: Path, destination: Path) -> None:
     old_files = _control_files(destination)
     new_files = _control_files(source)
@@ -442,6 +584,7 @@ def _create_backup(target: Path) -> Path:
     if _is_link(backup_parent):
         raise ApplyError("unsafe backup directory")
     backup_parent.mkdir(mode=0o700, exist_ok=True)
+    backup_parent.chmod(0o700)
     existing_backups: list[Path] = []
     for path in backup_parent.iterdir():
         if not path.name.startswith("backup-"):
@@ -457,11 +600,21 @@ def _create_backup(target: Path) -> Path:
     )
     backup.mkdir(mode=0o700)
     try:
-        for relative in sorted(_control_files(target)):
+        controls = sorted(_control_files(target))
+        metadata_paths = set(controls)
+        for relative in MANAGED_METADATA_DIRECTORIES:
+            path = _local_path(target, relative)
+            if path.exists() or _is_link(path):
+                metadata_paths.add(relative)
+        metadata = tuple(
+            _metadata_entry(_local_path(target, relative), relative)
+            for relative in sorted(metadata_paths)
+        )
+        for relative in controls:
             source = _local_path(target, relative)
             destination = _local_path(backup, relative)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+            _copy_private(source, destination)
+        _write_backup_metadata(backup, metadata)
     except Exception:
         shutil.rmtree(backup, ignore_errors=True)
         raise
@@ -471,8 +624,41 @@ def _create_backup(target: Path) -> Path:
     return backup
 
 
-def _restore_controls(backup: Path, target: Path) -> None:
+def _restore_controls(
+    backup: Path,
+    target: Path,
+    ownership: OwnershipSetter,
+) -> None:
+    metadata = _load_backup_metadata(backup)
     _replace_controls(backup, target)
+    for entry in metadata:
+        path = _local_path(target, entry.requirement.path)
+        try:
+            status = path.lstat()
+        except OSError as error:
+            raise ApplyError("restored metadata target is missing") from error
+        if _is_link(path) or (
+            entry.kind == "file" and not stat.S_ISREG(status.st_mode)
+        ) or (
+            entry.kind == "directory" and not stat.S_ISDIR(status.st_mode)
+        ):
+            raise ApplyError("restored metadata target is unsafe")
+    ordered = sorted(
+        metadata,
+        key=lambda entry: (
+            entry.kind == "directory",
+            -len(entry.requirement.path.parts),
+            entry.requirement.path.as_posix(),
+        ),
+    )
+    try:
+        replay_required_ownership(
+            target,
+            (entry.requirement for entry in ordered),
+            ownership,
+        )
+    except OwnershipPolicyError as error:
+        raise ApplyError(str(error)) from error
 
 
 def _recover_previous_runtime(
@@ -483,12 +669,19 @@ def _recover_previous_runtime(
     timeout: float,
 ) -> None:
     if backup is not None:
-        _restore_controls(backup, target)
-    previous = _load_manifest(target)
-    _apply_ownership(target, previous, ownership)
+        _restore_controls(backup, target, ownership)
+    previous = _load_manifest(target, allow_legacy_ownership=True)
+    if backup is None:
+        _apply_ownership(target, previous, ownership)
     # Rollback must reuse the previous content-addressed image. Rebuilding here
     # from a newer checkout would silently create a mixed old-config/new-code state.
-    _run(runner, target, previous, ("up", "-d", "--no-build"), timeout)
+    _run(
+        runner,
+        target,
+        previous,
+        ("up", "-d", "--no-build", "--wait", "--remove-orphans"),
+        timeout,
+    )
 
 
 def _remove_staging(staging: Path) -> None:
@@ -538,7 +731,7 @@ def apply_staging(
             if not target.is_dir():
                 raise ApplyError("existing target_root is not a directory")
             _control_files(target)
-            previous = _load_manifest(target)
+            previous = _load_manifest(target, allow_legacy_ownership=True)
             if previous.instance_id != manifest.instance_id:
                 raise ApplyError("staging instance does not match target runtime")
             changed = not _controls_equal(staging, target)
@@ -558,7 +751,11 @@ def apply_staging(
                 except Exception as error:
                     if backup is not None:
                         try:
-                            _restore_controls(backup, target)
+                            _restore_controls(backup, target, ownership_setter)
+                            _load_manifest(
+                                target,
+                                allow_legacy_ownership=True,
+                            )
                         except Exception:
                             raise ApplyError(
                                 "control switch failed and previous controls "
@@ -575,7 +772,7 @@ def apply_staging(
                     runner,
                     target,
                     current,
-                    ("up", "-d", "--build"),
+                    ("up", "-d", "--build", "--wait", "--remove-orphans"),
                     command_timeout,
                 )
                 verified = _verify(verifier, target)
@@ -616,7 +813,7 @@ def apply_staging(
                 runner,
                 target,
                 manifest,
-                ("up", "-d", "--build"),
+                ("up", "-d", "--build", "--wait", "--remove-orphans"),
                 command_timeout,
             )
             verified = _verify(verifier, target)

@@ -2,7 +2,7 @@
 
 升级的唯一长期输入是源码版本、`camare.ini` 和它引用的密钥文件。不要直接修改 `/opt/1panel/docker/compose/camare-<instance-id>` 中的生成文件；下一次 `apply` 会按声明配置重新生成。
 
-> 当前正式 Release 和 Linux 隔离 E2E 尚待完成。没有经过隔离验收的 commit 不应直接用于现网升级。
+> Linux x86-64 / CPU / 两路合成 H.264 隔离 E2E 已通过；正式 Release 与真实设备矩阵仍待完成。没有经过隔离验收的 commit 不应直接用于现网升级。
 
 ## 升级前
 

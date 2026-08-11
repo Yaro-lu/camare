@@ -67,11 +67,16 @@ path = /live/201
 """
 
 
+def write_private_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o600)
+
+
 class CamareConfigTests(unittest.TestCase):
     def write_config(self, root: Path, content: str = VALID_CONFIG) -> Path:
         secret = root / "secrets" / "yard.password"
-        secret.parent.mkdir()
-        secret.write_text("not-a-real-password", encoding="utf-8")
+        write_private_text(secret, "not-a-real-password")
         config_path = root / "camare.ini"
         config_path.write_text(content, encoding="utf-8")
         return config_path
@@ -287,7 +292,7 @@ path = /live/101
     def test_cloudflare_requires_token_reference_and_never_loads_secret_values(self) -> None:
         cloudflare = (
             VALID_CONFIG.replace("provider = lan", "provider = cloudflare")
-            .replace("origin =\nloopback_port = 9080", "origin = https://camera.lol-lu.site\nloopback_port = 9080", 1)
+            .replace("origin =\nloopback_port = 9080", "origin = https://camera.example.com\nloopback_port = 9080", 1)
             .replace(
                 "cloudflare_token_file =",
                 "cloudflare_token_file = secrets/cloudflare.token",
@@ -307,7 +312,7 @@ path = /live/101
                 load_config(config_path)
 
             token_file = root / "secrets" / "cloudflare.token"
-            token_file.write_text("CF-TOKEN-SUPERSECRET", encoding="utf-8")
+            write_private_text(token_file, "CF-TOKEN-SUPERSECRET")
             config = load_config(config_path)
 
         self.assertEqual(config.public.cloudflare_token_file, token_file.resolve())
@@ -320,7 +325,7 @@ path = /live/101
     def test_provider_origins_follow_lan_cloudflare_and_tailscale_boundaries(self) -> None:
         cloudflare = (
             VALID_CONFIG.replace("provider = lan", "provider = cloudflare")
-            .replace("origin =\nloopback_port = 9080", "origin = https://camera.lol-lu.site\nloopback_port = 9080", 1)
+            .replace("origin =\nloopback_port = 9080", "origin = https://camera.example.com\nloopback_port = 9080", 1)
             .replace(
                 "cloudflare_token_file =",
                 "cloudflare_token_file = secrets/cloudflare.token",
@@ -335,20 +340,20 @@ path = /live/101
         invalid_documents = (
             VALID_CONFIG.replace(
                 "origin =\nloopback_port = 9080",
-                "origin = https://camera.lol-lu.site\nloopback_port = 9080",
+                "origin = https://camera.example.com\nloopback_port = 9080",
                 1,
             ),
             cloudflare.replace(
-                "https://camera.lol-lu.site", "http://camera.lol-lu.site"
+                "https://camera.example.com", "http://camera.example.com"
             ),
             cloudflare.replace(
                 "https://camera-node.example-tailnet.ts.net:9443",
-                "https://admin.lol-lu.site:9443",
+                "https://admin.example.com:9443",
             ),
             cloudflare.replace("owner@example.com", ""),
             cloudflare.replace("provider = cloudflare", "provider = tailscale").replace(
-                "https://camera.lol-lu.site",
-                "https://public-not-tailscale.lol-lu.site:8443",
+                "https://camera.example.com",
+                "https://public.example.com:8443",
             ),
         )
         for content in invalid_documents:
@@ -356,7 +361,7 @@ path = /live/101
                 root = Path(temporary)
                 config_path = self.write_config(root, content)
                 token = root / "secrets" / "cloudflare.token"
-                token.write_text("not-a-real-token", encoding="utf-8")
+                write_private_text(token, "not-a-real-token")
 
                 with self.assertRaises(ConfigError):
                     load_config(config_path)
@@ -441,8 +446,7 @@ path = /live/101
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             secret = root / "secrets" / "yard-rtsp-password"
-            secret.parent.mkdir()
-            secret.write_text("not-a-real-password", encoding="utf-8")
+            write_private_text(secret, "not-a-real-password")
             config_path = root / "camare.ini"
             config_path.write_text(example, encoding="utf-8")
 

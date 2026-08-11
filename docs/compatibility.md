@@ -2,7 +2,9 @@
 
 本页描述当前声明式部署路径的边界，不代表 Frigate 本身的全部能力。
 
-> 验证状态：本地配置、渲染、事务、Portal 和策略自动化测试已通过；Linux 隔离 E2E、真实摄像头矩阵和正式 Release 验收待执行。
+> 验证状态：本地配置、渲染、事务、Portal 和策略自动化测试已通过；Linux x86-64 / CPU / 两路合成 H.264 的隔离 Docker E2E 已通过，真实摄像头矩阵和正式 Release 验收待执行。
+
+2026-08-11 的隔离验收使用 Docker Engine 29.5.2、Compose 5.1.4、Frigate 0.17.2 和 MediaMTX 合成两路 H.264，覆盖构建、健康等待、go2rtc producer、连续 MP4、VOD 回放清单、备份、恢复、卸载、重装和录像保留。该结果不包含 Intel VAAPI、NAS 断连、真实摄像头音频或移动端浏览器矩阵。
 
 ## 主机
 
@@ -10,7 +12,8 @@
 |---|---|---|
 | Linux x86-64 | 支持 | `doctor` 会拒绝其他系统/架构 |
 | Python 3.10+ | 支持 | CLI 只使用 Python 标准库 |
-| Docker Engine + Compose v2 | 支持 | `docker compose` v1 不支持 |
+| Docker Engine + Compose v2 | 支持 | 必须支持 `docker compose up --wait`；`doctor` 会实测，Compose v1 不支持 |
+| rootless Docker / userns-remap | 不支持 | 本地 file secret 是 bind mount；发行权限模型依赖 rootful Docker 的固定数值 UID/GID |
 | 1Panel | 可选 | 只作为生成后的单一 Compose 管理界面 |
 | ARM / ARM64 | 不支持 | 当前镜像、检测和发行测试未覆盖 |
 | Windows / macOS 主机 | 不支持部署 | 可作为观看客户端；不能通过 `doctor` 主机检查 |
@@ -54,7 +57,7 @@
 | 类型 | 状态 | 说明 |
 |---|---|---|
 | 本地现有目录 | 支持 | 必须非根目录、存在、可读写且空间充足 |
-| 已挂载 NAS/NFS/SMB 目录 | 条件支持 | 挂载、重连、缓存和权限由操作系统负责；`doctor` 不证明 mount 身份；隔离 E2E 待执行 |
+| 已挂载 NAS/NFS/SMB 目录 | 条件支持 | 挂载、重连、缓存和权限由操作系统负责；`doctor` 不证明 mount 身份；本地目录 E2E 已通过，NAS 断连/重连尚未验证 |
 | Docker 命名卷 | 当前不支持配置 | `storage.media` 接受主机绝对路径 |
 | 自动格式化/挂载/搬迁 | 不支持 | Camare 不操作磁盘分区、fstab 或复制录像 |
 
@@ -72,4 +75,4 @@ Cloudflare 和 Tailscale 模式都会保留 LAN 入口。公网客户入口二�
 
 ## 浏览器
 
-Portal 代码面向现代 iPhone/iPad Safari、Android Chromium 以及 Windows/macOS 常见现代浏览器。浏览器后台暂停、自动播放、低电量策略和 H.264 profile 支持由具体系统决定。当前新发行栈的跨设备真实 E2E 尚待执行，因此正式交付前应在目标手机上测试直播、全屏、日期/时间轴回放和后台恢复。
+Portal 代码面向现代 iPhone/iPad Safari、Android Chromium 以及 Windows/macOS 常见现代浏览器。浏览器后台暂停、自动播放、低电量策略和 H.264 profile 支持由具体系统决定。服务器侧合成 E2E 不覆盖跨设备浏览器行为，因此正式交付前仍应在目标手机上测试直播、全屏、日期/时间轴回放和后台恢复。

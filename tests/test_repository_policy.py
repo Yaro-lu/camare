@@ -65,6 +65,25 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertIn(digest, installer)
         self.assertNotIn('"cloudflare/cloudflared:latest"', installer)
 
+    def test_single_stack_uses_host_metadata_for_local_file_secrets(self) -> None:
+        compose = (REPOSITORY_ROOT / "deploy" / "compose.base.yaml").read_text(
+            encoding="utf-8"
+        )
+        caddy_service = compose.split("  lan-caddy:", 1)[1].split(
+            "@@CLOUDFLARED_SERVICE@@", 1
+        )[0]
+        top_level_secrets = compose.split("\nsecrets:\n", 1)[1].split(
+            "\nnetworks:\n", 1
+        )[0]
+
+        self.assertEqual(compose.count("group_add:"), 1)
+        self.assertIn('    group_add:\n      - "65532"\n', caddy_service)
+        # Compose cannot implement uid/gid/mode for a local file source; the
+        # rendered manifest applies those values to the host files instead.
+        self.assertNotIn("uid:", top_level_secrets)
+        self.assertNotIn("gid:", top_level_secrets)
+        self.assertNotIn("mode:", top_level_secrets)
+
     def test_compose_projects_do_not_claim_global_container_names(self) -> None:
         for relative_path in COMPOSE_FILES:
             with self.subTest(compose=relative_path):

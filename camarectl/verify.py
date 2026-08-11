@@ -15,6 +15,7 @@ from typing import Callable, Literal, Protocol
 
 from .checks import CommandResult, CommandRunner, LocalCommandRunner
 from .model import DeploymentConfig
+from .ownership import OwnershipRequirement, parse_required_ownership
 
 
 VerificationLevel = Literal["PASS", "WARN", "FAIL"]
@@ -40,6 +41,13 @@ class RecordingSnapshot:
     size: int
 
 
+@dataclass(frozen=True)
+class OwnershipStatus:
+    uid: int
+    gid: int
+    mode: int
+
+
 class HTTPProbe(Protocol):
     def get(self, url: str, timeout: float) -> HTTPResult: ...
 
@@ -48,6 +56,8 @@ class PathProbe(Protocol):
     def read_text(self, path: Path, max_bytes: int) -> str: ...
 
     def sha256_regular_file(self, path: Path, max_bytes: int) -> str | None: ...
+
+    def ownership_status(self, path: Path) -> OwnershipStatus | None: ...
 
     def latest_recording(
         self,
@@ -112,6 +122,28 @@ class LocalPathProbe:
             return None
         return digest.hexdigest()
 
+    def ownership_status(self, path: Path) -> OwnershipStatus | None:
+        try:
+            status = path.lstat()
+        except OSError:
+            return None
+        is_reparse = bool(
+            getattr(status, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        )
+        uid = getattr(status, "st_uid", None)
+        gid = getattr(status, "st_gid", None)
+        if (
+            path.is_symlink()
+            or stat.S_ISLNK(status.st_mode)
+            or is_reparse
+            or not (stat.S_ISREG(status.st_mode) or stat.S_ISDIR(status.st_mode))
+            or not isinstance(uid, int)
+            or not isinstance(gid, int)
+        ):
+            return None
+        return OwnershipStatus(uid=uid, gid=gid, mode=stat.S_IMODE(status.st_mode))
+
     def latest_recording(
         self,
         recordings_root: Path,
@@ -163,7 +195,7 @@ def _manifest_compose_files(
     config: DeploymentConfig,
     runtime_root: Path,
     paths: PathProbe,
-) -> tuple[Path, ...]:
+) -> tuple[tuple[Path, ...], tuple[OwnershipRequirement, ...]]:
     manifest_text = paths.read_text(
         runtime_root / "manifest.json",
         MANIFEST_MAX_BYTES,
@@ -194,6 +226,7 @@ def _manifest_compose_files(
         raise ValueError("manifest file inventory is incomplete or unexpected")
     if manifest.get("mutable_files") != ["frigate/config.yml"]:
         raise ValueError("manifest mutable file inventory is incomplete or unexpected")
+    ownership = parse_required_ownership(manifest).requirements
 
     verified_files: dict[str, Path] = {}
     verified_paths: set[Path] = set()
@@ -233,7 +266,37 @@ def _manifest_compose_files(
     if values != expected_compose_files:
         raise ValueError("manifest compose file list does not match hardware mode")
     compose_files = [verified_files[value] for value in values]
-    return tuple(compose_files)
+    return tuple(compose_files), ownership
+
+
+def _ownership_results(
+    runtime_root: Path,
+    requirements: tuple[OwnershipRequirement, ...],
+    paths: PathProbe,
+) -> tuple[VerificationResult, ...]:
+    results: list[VerificationResult] = []
+    for requirement in requirements:
+        candidate = runtime_root.joinpath(*requirement.path.parts)
+        status = paths.ownership_status(candidate)
+        code = f"runtime.ownership.{requirement.path.as_posix().replace('/', '.')}"
+        matches = status is not None and (
+            status.uid,
+            status.gid,
+            status.mode,
+        ) == (requirement.uid, requirement.gid, requirement.mode)
+        results.append(
+            VerificationResult(
+                "PASS" if matches else "FAIL",
+                code,
+                (
+                    "Runtime ownership matches the manifest"
+                    if matches
+                    else "Runtime ownership or mode differs from the manifest"
+                ),
+                f"path: {requirement.path}",
+            )
+        )
+    return tuple(results)
 
 
 def _compose_prefix(
@@ -574,7 +637,7 @@ def verify_runtime(
     results: list[VerificationResult] = []
 
     try:
-        compose_files = _manifest_compose_files(config, root, paths)
+        compose_files, ownership = _manifest_compose_files(config, root, paths)
     except (OSError, UnicodeError, ValueError, TypeError):
         return (
             VerificationResult(
@@ -591,6 +654,7 @@ def verify_runtime(
             f"compose files: {len(compose_files)}",
         )
     )
+    results.extend(_ownership_results(root, ownership, paths))
 
     prefix = _compose_prefix(config, root, compose_files)
     compose_ps = command_runner.run(

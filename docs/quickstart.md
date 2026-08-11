@@ -2,7 +2,7 @@
 
 本指南从空目录创建一个新的 Camare 实例。它不会迁移现有 Frigate/Portal，也不会替你修改路由器、DNS、磁盘挂载、Cloudflare 或 Tailscale 账号。
 
-> 当前状态：本地自动化测试已通过，Linux 隔离 E2E 待执行。第一次部署请先用测试摄像头或独立媒体目录验证，不能与现有实例共享 Frigate 数据库或同一录像写入目录。
+> 当前状态：本地自动化测试及 Linux x86-64 / CPU / 两路合成 H.264 隔离 E2E 已通过。真实摄像头、硬件解码和目标存储仍需在各自环境验证；第一次部署不能与现有实例共享 Frigate 数据库或同一录像写入目录。
 
 ## 1. 准备主机和摄像头
 
@@ -10,7 +10,7 @@
 
 - Linux x86-64；
 - Python 3.10 或更高；
-- Docker Engine 和 `docker compose` v2；
+- Docker Engine，以及支持 `docker compose up --wait` 的 Compose v2；
 - 服务器能访问的 H.264 RTSP 摄像头；
 - 一个已经存在、可写、重启后仍会挂载的录像目录；
 - CPU 模式，或 Intel VAAPI 的 `/dev/dri/renderD<number>`。
@@ -100,6 +100,8 @@ python3 -c 'from getpass import getpass; from pathlib import Path; Path("secrets
 ```
 
 配置加载只验证密钥文件和权限；只有渲染阶段会读取值，输出不会显示秘密。
+
+这里的 `0600` 要求针对你维护的输入文件。`apply` 会另外生成运行 secret，并依据 manifest 固定宿主权限：摄像头密码保持 root-only，Cloudflare token 只允许 cloudflared 的非 root UID 读取；只在 Portal 与 LAN Caddy 间共享的内部 LAN key 使用受限组读取。不要手工 `chmod 777` 运行目录来处理容器读权限。
 
 ## 5. 验证、预检和计划
 
