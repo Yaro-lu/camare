@@ -1,0 +1,156 @@
+name: "camare_${CAMARE_INSTANCE_ID:?set CAMARE_INSTANCE_ID in .env}"
+
+services:
+  frigate:
+    image: "${FRIGATE_IMAGE:?set FRIGATE_IMAGE in .env}"
+    restart: unless-stopped
+    stop_grace_period: 30s
+    shm_size: "256mb"
+    mem_limit: "1200m"
+    cpus: 1.5
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - type: bind
+        source: ./frigate
+        target: /config
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${CAMARE_MEDIA_PATH:?set CAMARE_MEDIA_PATH in .env}"
+        target: /media/frigate
+        bind:
+          create_host_path: false
+      - type: tmpfs
+        target: /tmp/cache
+        tmpfs:
+          size: 268435456
+    ports:
+      - "${FRIGATE_ADMIN_BIND_IP:?set FRIGATE_ADMIN_BIND_IP in .env}:${FRIGATE_ADMIN_PORT:?set FRIGATE_ADMIN_PORT in .env}:8971/tcp"
+    secrets:
+@@FRIGATE_SERVICE_SECRETS@@
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  camera-portal:
+    build:
+      context: "${CAMARE_SOURCE_ROOT:?set CAMARE_SOURCE_ROOT in .env}/camera-portal"
+      dockerfile: Dockerfile
+    image: "${CAMERA_PORTAL_IMAGE:?set CAMERA_PORTAL_IMAGE in .env}"
+    restart: unless-stopped
+    user: "65532:65532"
+    read_only: true
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.35
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    ports:
+      - "127.0.0.1:${PUBLIC_LOOPBACK_PORT:?set PUBLIC_LOOPBACK_PORT in .env}:8080/tcp"
+      - "127.0.0.1:${ADMIN_LOOPBACK_PORT:?set ADMIN_LOOPBACK_PORT in .env}:8081/tcp"
+    volumes:
+      - ./portal-data:/data
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      PUBLIC_ADDR: ":8080"
+      ADMIN_ADDR: ":8081"
+      STATE_PATH: /data/state.json
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL}"
+      LOCAL_BASE_URL: "${LOCAL_BASE_URL:?set LOCAL_BASE_URL in .env}"
+      LOCAL_ACCESS_KEY_FILE: /run/secrets/LAN_ACCESS_KEY
+      ADMIN_DISABLED: "${ADMIN_DISABLED:-false}"
+      ADMIN_ORIGIN: "${ADMIN_ORIGIN}"
+      ADMIN_TAILSCALE_LOGIN: "${ADMIN_TAILSCALE_LOGIN}"
+      FRIGATE_URL: http://frigate:5000
+      GO2RTC_URL: http://frigate:1984
+      RECORDING_TIMEZONE: "${RECORDING_TIMEZONE:?set RECORDING_TIMEZONE in .env}"
+      CAMERAS: "${CAMERAS:?set CAMERAS in .env}"
+      CAMERA_GROUPS: "${CAMERA_GROUPS:?set CAMERA_GROUPS in .env}"
+      MAX_LIVE_STREAMS: "8"
+      MAX_DEVICE_LIVE_STREAMS: "2"
+      LIVE_LEASE: 15m
+      MAX_REPLAY_REQUESTS: "16"
+      MAX_DEVICE_REPLAY_REQUESTS: "4"
+    secrets:
+      - source: lan_access_key
+        target: LAN_ACCESS_KEY
+    depends_on:
+      frigate:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/camera-portal", "-healthcheck", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  lan-caddy:
+    build:
+      context: "${CAMARE_SOURCE_ROOT:?set CAMARE_SOURCE_ROOT in .env}/camera-portal-lan/caddy"
+      dockerfile: Dockerfile
+      args:
+        CADDY_VERSION: "2.11.4"
+    image: "${LAN_CADDY_IMAGE:?set LAN_CADDY_IMAGE in .env}"
+    restart: unless-stopped
+    init: true
+    entrypoint:
+      - /bin/sh
+      - -eu
+      - -c
+      - >-
+        export LAN_ACCESS_KEY="$$(cat /run/secrets/LAN_ACCESS_KEY)";
+        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 64m
+    cpus: 0.15
+    stop_grace_period: 10s
+    tmpfs:
+      - /tmp:size=8m,mode=1777,noexec,nosuid,nodev
+    ports:
+      - "${LAN_BIND_IP:?set LAN_BIND_IP in .env}:${LAN_PORT:?set LAN_PORT in .env}:8080/tcp"
+    environment:
+      LAN_HOSTPORT: "${LAN_BIND_IP:?set LAN_BIND_IP in .env}:${LAN_PORT:?set LAN_PORT in .env}"
+      XDG_CONFIG_HOME: /tmp/config
+      XDG_DATA_HOME: /tmp/data
+    secrets:
+      - source: lan_access_key
+        target: LAN_ACCESS_KEY
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      camera-portal:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--max-time", "5", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+@@CLOUDFLARED_SERVICE@@
+
+secrets:
+@@TOP_LEVEL_SECRETS@@

@@ -1,0 +1,6 @@
+services:
+  frigate:
+    devices:
+      - "${FRIGATE_RENDER_DEVICE:?set FRIGATE_RENDER_DEVICE in .env}:${FRIGATE_RENDER_DEVICE:?set FRIGATE_RENDER_DEVICE in .env}"
+    environment:
+      LIBVA_DRIVER_NAME: "${LIBVA_DRIVER_NAME:?set LIBVA_DRIVER_NAME in .env}"
