@@ -287,6 +287,77 @@ func TestPublicAndAdminSurfacesAreSeparated(t *testing.T) {
 	}
 }
 
+func TestAdminCanBeExplicitlyDisabledForLanOnlyDeployment(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	static := fstest.MapFS{
+		"client.html":       &fstest.MapFile{Data: []byte("client")},
+		"unbound.html":      &fstest.MapFile{Data: []byte("unbound")},
+		"pair.html":         &fstest.MapFile{Data: []byte("pair")},
+		"pair-invalid.html": &fstest.MapFile{Data: []byte("invalid")},
+		"admin.html":        &fstest.MapFile{Data: []byte("admin")},
+	}
+	app, err := NewApp(Config{
+		PublicBaseURL:  "http://192.168.1.250:8088",
+		LocalBaseURL:   "http://192.168.1.250:8088",
+		LocalAccessKey: testLocalAccessKey,
+		AdminDisabled:  true,
+		FrigateURL:     "http://frigate.test",
+		Go2RTCURL:      "http://frigate.test",
+		Cameras:        []Camera{{ID: "ptz_view", Name: "PTZ"}},
+		CameraGroups: []CameraGroup{{
+			ID:        "yard",
+			Name:      "Yard",
+			CameraIDs: [2]string{"ptz_view", ""},
+		}},
+	}, store, static, nil)
+	if err != nil {
+		t.Fatalf("LAN-only app: %v", err)
+	}
+
+	health := httptest.NewRecorder()
+	app.AdminHandler().ServeHTTP(
+		health,
+		httptest.NewRequest(http.MethodGet, "/healthz", nil),
+	)
+	if health.Code != http.StatusOK {
+		t.Fatalf("disabled admin health = %d", health.Code)
+	}
+
+	for _, path := range []string{"/", "/api/devices", "/api/pairings"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Tailscale-User-Login", "owner@example.com")
+		response := httptest.NewRecorder()
+		app.AdminHandler().ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("disabled admin %s = %d, want 404", path, response.Code)
+		}
+	}
+}
+
+func TestAdminIdentityIsRequiredUnlessExplicitlyDisabled(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewApp(Config{
+		PublicBaseURL: "http://192.168.1.250:8088",
+		FrigateURL:    "http://frigate.test",
+		Go2RTCURL:     "http://frigate.test",
+		Cameras:       []Camera{{ID: "ptz_view", Name: "PTZ"}},
+		CameraGroups: []CameraGroup{{
+			ID:        "yard",
+			Name:      "Yard",
+			CameraIDs: [2]string{"ptz_view", ""},
+		}},
+	}, store, fstest.MapFS{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "ADMIN_ORIGIN") {
+		t.Fatalf("missing admin configuration error = %v", err)
+	}
+}
+
 func TestAdminMutationsRequireOriginAndCustomHeader(t *testing.T) {
 	app, _ := newTestApp(t, "http://frigate.test")
 	newRequest := func() *http.Request {

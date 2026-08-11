@@ -32,6 +32,11 @@ func main() {
 		logger.Error("open state", "error", err)
 		os.Exit(1)
 	}
+	localAccessKey, err := envOrFile("LOCAL_ACCESS_KEY")
+	if err != nil {
+		logger.Error("read local access key", "error", err)
+		os.Exit(1)
+	}
 	cameras := parseCameras(env("CAMERAS", "ptz_view=云台画面,fixed_view=枪机画面"))
 	cameraGroups, err := portal.ParseCameraGroups(
 		env("CAMERA_GROUPS", "yard=院子:ptz_view|fixed_view;front=门前:|"),
@@ -44,7 +49,8 @@ func main() {
 	config := portal.Config{
 		PublicBaseURL:              os.Getenv("PUBLIC_BASE_URL"),
 		LocalBaseURL:               os.Getenv("LOCAL_BASE_URL"),
-		LocalAccessKey:             os.Getenv("LOCAL_ACCESS_KEY"),
+		LocalAccessKey:             localAccessKey,
+		AdminDisabled:              envBool("ADMIN_DISABLED", false),
 		AdminOrigin:                os.Getenv("ADMIN_ORIGIN"),
 		AdminLogin:                 os.Getenv("ADMIN_TAILSCALE_LOGIN"),
 		FrigateURL:                 env("FRIGATE_URL", "http://frigate:5000"),
@@ -153,4 +159,38 @@ func envDuration(name string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return value
+}
+
+func envBool(name string, fallback bool) bool {
+	value, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(name)))
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func envOrFile(name string) (string, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	fileName := strings.TrimSpace(os.Getenv(name + "_FILE"))
+	if value != "" && fileName != "" {
+		return "", fmt.Errorf("%s and %s_FILE cannot both be set", name, name)
+	}
+	if fileName == "" {
+		return value, nil
+	}
+	info, err := os.Stat(fileName)
+	if err != nil {
+		return "", fmt.Errorf("read %s_FILE: %w", name, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s_FILE is not a regular file", name)
+	}
+	if info.Size() > 4096 {
+		return "", fmt.Errorf("%s_FILE is too large", name)
+	}
+	contents, err := os.ReadFile(fileName)
+	if err != nil {
+		return "", fmt.Errorf("read %s_FILE: %w", name, err)
+	}
+	return strings.TrimSpace(string(contents)), nil
 }

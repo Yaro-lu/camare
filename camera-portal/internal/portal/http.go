@@ -43,6 +43,7 @@ type Config struct {
 	PublicBaseURL              string
 	LocalBaseURL               string
 	LocalAccessKey             string
+	AdminDisabled              bool
 	AdminOrigin                string
 	AdminLogin                 string
 	FrigateURL                 string
@@ -119,12 +120,20 @@ func NewApp(config Config, store *Store, static fs.FS, logger *slog.Logger) (*Ap
 	if err != nil || go2rtcURL.Scheme == "" || go2rtcURL.Host == "" {
 		return nil, errors.New("GO2RTC_URL must be an absolute URL")
 	}
-	adminURL, err := url.Parse(config.AdminOrigin)
-	if err != nil || adminURL.Scheme == "" || adminURL.Host == "" {
-		return nil, errors.New("ADMIN_ORIGIN must be an absolute URL")
-	}
-	if strings.TrimSpace(config.AdminLogin) == "" {
-		return nil, errors.New("ADMIN_TAILSCALE_LOGIN is required")
+	var adminOrigin string
+	if config.AdminDisabled {
+		if strings.TrimSpace(config.AdminOrigin) != "" || strings.TrimSpace(config.AdminLogin) != "" {
+			return nil, errors.New("disabled admin requires empty ADMIN_ORIGIN and ADMIN_TAILSCALE_LOGIN")
+		}
+	} else {
+		adminURL, adminErr := url.Parse(config.AdminOrigin)
+		if adminErr != nil || adminURL.Scheme == "" || adminURL.Host == "" {
+			return nil, errors.New("ADMIN_ORIGIN must be an absolute URL")
+		}
+		if strings.TrimSpace(config.AdminLogin) == "" {
+			return nil, errors.New("ADMIN_TAILSCALE_LOGIN is required")
+		}
+		adminOrigin = adminURL.Scheme + "://" + adminURL.Host
 	}
 	if len(config.Cameras) == 0 {
 		return nil, errors.New("at least one camera is required")
@@ -181,7 +190,7 @@ func NewApp(config Config, store *Store, static fs.FS, logger *slog.Logger) (*Ap
 		localOrigin:    localOrigin,
 		localHost:      strings.TrimPrefix(localOrigin, "http://"),
 		localAccessKey: localAccessKey,
-		adminOrigin:    adminURL.Scheme + "://" + adminURL.Host,
+		adminOrigin:    adminOrigin,
 	}
 	app.cameraControl = newCameraControl(frigateURL, cameraByID, config.CameraGroups)
 	return app, nil
@@ -215,6 +224,9 @@ func (a *App) PublicHandler() http.Handler {
 func (a *App) AdminHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", a.health)
+	if a.config.AdminDisabled {
+		return a.securityHeaders(mux)
+	}
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /", a.adminHome)
 	protected.HandleFunc("GET /assets/admin.css", a.staticFile("assets/admin.css"))
