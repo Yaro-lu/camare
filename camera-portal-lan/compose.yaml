@@ -1,15 +1,16 @@
-name: camera-portal-lan
+name: "${LAN_PROJECT_NAME:-camera-portal-lan}"
 
 services:
   lan-caddy:
     build:
       context: ./caddy
       dockerfile: Dockerfile
-      network: host
+      # Use normal BuildKit networking by default. Set
+      # LAN_CADDY_BUILD_NETWORK=host only for an explicit host proxy route.
+      network: "${LAN_CADDY_BUILD_NETWORK:-default}"
       args:
         CADDY_VERSION: "2.11.4"
-    image: local/camera-portal-lan-caddy:2.11.4
-    container_name: camera-portal-lan-caddy
+    image: "${LAN_CADDY_IMAGE:-local/camera-portal-lan-caddy:2.11.4}"
     restart: unless-stopped
     init: true
     user: "1000:1000"

@@ -13,7 +13,7 @@ ffmpeg:
   path: "7.0"
   hwaccel_args: preset-vaapi
   output_args:
-    record: preset-record-generic-audio-aac
+    record: preset-record-generic
   retry_interval: 10
 
 go2rtc:
