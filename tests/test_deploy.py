@@ -90,6 +90,18 @@ class ValidationTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_cloudflared_image_is_pinned_and_legacy_latest_is_migrated(self) -> None:
+        pinned = deploy.CLOUDFLARED_IMAGE
+        self.assertIn("@sha256:", pinned)
+        self.assertEqual(deploy.normalize_cloudflared_image(""), pinned)
+        self.assertEqual(
+            deploy.normalize_cloudflared_image("cloudflare/cloudflared:latest"),
+            pinned,
+        )
+        self.assertEqual(deploy.normalize_cloudflared_image(pinned), pinned)
+        with self.assertRaisesRegex(deploy.InstallerError, "digest"):
+            deploy.normalize_cloudflared_image("cloudflare/cloudflared:2026.7.3")
+
     def test_env_round_trip_and_newline_rejection(self) -> None:
         mapping = {
             "SIMPLE": "value",

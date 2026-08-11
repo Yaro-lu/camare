@@ -59,6 +59,12 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertNotIn("cloudflare/cloudflared:latest", compose)
         self.assertNotIn("cloudflare/cloudflared:latest", example_env)
 
+        installer = (REPOSITORY_ROOT / "deploy.py").read_text(encoding="utf-8")
+        tag, digest = CLOUDFLARED_IMAGE.split("@", 1)
+        self.assertIn(tag + "@", installer)
+        self.assertIn(digest, installer)
+        self.assertNotIn('"cloudflare/cloudflared:latest"', installer)
+
     def test_compose_projects_do_not_claim_global_container_names(self) -> None:
         for relative_path in COMPOSE_FILES:
             with self.subTest(compose=relative_path):
