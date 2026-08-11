@@ -32,8 +32,16 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertTrue(changelog_path.is_file(), "CHANGELOG.md is required")
         text = changelog_path.read_text(encoding="utf-8")
         self.assertIn("## [Unreleased]", text)
+        self.assertIn("## [0.1.0]\n", text)
         self.assertIn("### Changed", text)
         self.assertIn("默认不录制声音", text)
+
+    def test_local_deployment_inputs_are_not_tracked_by_default(self) -> None:
+        ignore = (REPOSITORY_ROOT / ".gitignore").read_text(encoding="utf-8")
+
+        self.assertIn("/camare.ini\n", ignore)
+        self.assertIn("**/secrets/*\n", ignore)
+        self.assertIn("**/node_modules/\n", ignore)
 
     def test_frigate_template_records_without_audio_by_default(self) -> None:
         text = (

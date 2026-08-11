@@ -27,7 +27,7 @@ Accepted
 
 - 需要生成器维护最终 Compose，不能只让用户复制静态模板。
 - 从旧四栈部署迁移到新单栈会产生一次受控停机，不能自动接管生产。
-- 本地构建模式仍需要保留源码 checkout；正式 GHCR 镜像发布后才能完全解耦。
+- 当前 `build_mode = local` 仍需要保留源码 checkout；发布 GHCR 镜像本身不会让安装器自动解耦，未来需要单独实现 image build mode。
 
 ### Neutral
 

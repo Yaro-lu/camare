@@ -1,14 +1,22 @@
 # 360摄像机 NAS 录像与回放方案（支持 RTSP 推流摄像头）
 
+[![Release](https://img.shields.io/github/v/release/Yaro-lu/camare?display_name=tag&sort=semver)](https://github.com/Yaro-lu/camare/releases/latest)
+[![Checks](https://github.com/Yaro-lu/camare/actions/workflows/checks.yml/badge.svg)](https://github.com/Yaro-lu/camare/actions/workflows/checks.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Camare 把 H.264 RTSP 摄像头、Frigate、家庭观看网页和可选公网入口整理成一个可重复生成的 Docker Compose 实例。Frigate 负责连续录像、直播和回放；Camera Portal 提供适合手机与电脑的分组双画面；录像始终直接读取同一媒体目录，不复制第二份。
 
-> 发行状态：声明式配置、渲染、事务更新、健康检查和应用层测试已通过自动化测试；Linux x86-64 / CPU / 两路合成 H.264 的隔离 Docker E2E 已通过。真实摄像头、Intel VAAPI、NAS 重连、ARM 和跨手机矩阵仍需分别验证；当前尚未发布正式版本。
+> 正式版本：[`v0.1.0`](https://github.com/Yaro-lu/camare/releases/tag/v0.1.0)。声明式配置、事务更新、健康检查、完整 Git 历史秘密扫描、依赖审查和镜像漏洞门禁均已通过；Linux x86-64 / CPU / 两路合成 H.264 的隔离 Docker E2E 已通过。真实摄像头、Intel VAAPI、NAS 重连、ARM 整栈和跨手机矩阵仍需分别验证。
+
+## 正式版本与下载
+
+推荐从 [GitHub Releases](https://github.com/Yaro-lu/camare/releases/latest) 获取经过标记的正式版本。每个 Release 提供确定性源码归档、`SHA256SUMS`、镜像 digest 清单和独立 SPDX SBOM；Portal 与 LAN Caddy 镜像同时发布到 GHCR，并附构建来源证明。不要从陌生镜像仓库或未经审查的分支部署家庭监控服务。
 
 ## 能做什么
 
 - 1–2 个摄像头组，每组 1–2 路画面；客户端同一时间只加载当前组。
 - H.264 RTSP 连续录像、直播与时间轴回放，录像保存在用户指定的唯一目录。
-- CPU 解码或 Intel VAAPI；默认不录音，可按组显式开启新录像音轨。
+- CPU 解码；也提供 Intel VAAPI 配置路径（需在目标主机实机验证）。默认不录音，可按组显式开启新录像音轨。
 - 家庭局域网固定 IPv4 免登录观看。
 - 可选 Cloudflare Tunnel 或 Tailscale Funnel 公网客户入口。
 - 公网模式的设备绑定管理页只通过 Tailscale Serve 暴露。
@@ -19,7 +27,7 @@ Camare 把 H.264 RTSP 摄像头、Frigate、家庭观看网页和可选公网入
 前提：Linux x86-64、Python 3.10+、Docker Engine、支持 `docker compose up --wait` 的 Docker Compose v2、可写且已挂载的录像目录，以及可从服务器访问的 H.264 RTSP 地址。第一次建议使用 `provider = lan`，公网入口后续再加。
 
 ```sh
-git clone https://github.com/Yaro-lu/camare.git
+git clone --branch v0.1.0 --depth 1 https://github.com/Yaro-lu/camare.git
 cd camare
 
 # init 不使用 sudo：配置和输入密钥属于当前用户
@@ -80,7 +88,7 @@ flowchart LR
 |---|---|
 | 主机 | Linux x86-64；Python 3.10+；支持 `up --wait` 的 Docker Compose v2 |
 | 摄像头 | H.264 RTSP；1–2 组，每组 1–2 路 |
-| 解码 | CPU 或 Intel VAAPI（`i965` / `iHD`） |
+| 解码 | CPU（合成 E2E 已验证）；Intel VAAPI（`i965` / `iHD`，配置支持、需实机验证） |
 | 录像 | 现有本地目录或已由系统稳定挂载的 NAS 目录 |
 | 公网 | Cloudflare Tunnel 或 Tailscale Funnel；二选一作为客户入口 |
 | 管理 | 公网模式下使用 Tailscale Serve |
@@ -102,7 +110,7 @@ Compose project 固定为 `camare_<instance-id>`，基础文件为 `compose.yaml
 
 1Panel 各版本对多 Compose 文件导入的支持不同。若界面不能同时选择 Intel override，请继续用 `./install.sh apply`/`status` 管理实例，并只在 1Panel 的“容器”页面观察状态；不要省略 override 后重建 Frigate。生成文件由 `camarectl` 管理，长期配置只改 `camare.ini`，再运行 `plan` 和 `apply`。
 
-当前 manifest 的 `build_mode` 是 `local`，Portal/Caddy 的 build context 仍指向 clone 下来的源码。正式 GHCR 镜像发行前不要删除或移动源码 checkout；需要换位置时先更新部署输入并重新 `plan/apply`。不要让 1Panel 另建 project 名，否则 CLI 将无法把它识别为同一实例。
+`v0.1.0` 同时发布经过漏洞扫描的 GHCR 多架构镜像、digest 和 SBOM；当前一键安装器为了保持生成逻辑与本地配置一致，仍以 `build_mode = local` 从已检出的正式 tag 构建 Portal/Caddy。因此部署后不要删除或移动源码 checkout；需要换位置时先更新部署输入并重新 `plan/apply`。不要手工把 GHCR 镜像替换进生成的 Compose，也不要让 1Panel 另建 project 名，否则 CLI 将无法把它识别为同一实例。
 
 管理页的组级录音滑块会修改当前 Frigate 配置并重启服务；该文件属于受控可变配置，会正常进入备份和回滚。`camare.ini` 仍是下次声明式部署的真相源：若希望设置在后续 `apply` 后继续保留，必须同步修改对应组的 `record_audio`。
 
@@ -129,8 +137,9 @@ sudo ./install.sh legacy --help
 
 ## 项目状态
 
-- 本地 Python、Go、Node、配置渲染和安全策略自动化测试已覆盖主要逻辑。
-- Linux x86-64 / CPU / 两路合成 H.264 的 Docker 构建、录像、回放、备份、恢复和卸载 E2E 已通过；正式 Release 与真实设备矩阵仍待完成。
+- `v0.1.0` 是首个正式公开版本，提供源码归档、校验和、镜像 digest、SBOM 与构建来源证明。
+- GitHub Actions 的 Python、Go、Node、配置渲染、依赖审查、完整历史秘密扫描和 HIGH/CRITICAL 镜像漏洞门禁全部通过。
+- Linux x86-64 / CPU / 两路合成 H.264 的 Docker 构建、录像、回放、备份、恢复和卸载 E2E 已通过；真实设备与硬件矩阵仍按上面的支持边界单独验收。
 - 项目不是 360、Frigate、Cloudflare 或 Tailscale 的官方产品。
 
 许可证见 [LICENSE](LICENSE)，上游组件见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，变更见 [CHANGELOG.md](CHANGELOG.md)。

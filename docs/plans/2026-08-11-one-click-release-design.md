@@ -1,5 +1,7 @@
 # Camare 一键部署发行版设计
 
+> 历史设计记录：最终发布行为以根 README 和兼容性矩阵为准；`v0.1.0` 安装器仍使用 local build，GHCR 镜像尚未接入声明式安装路径。
+
 ## 目标和边界
 
 首个公开发行版面向 Linux x86-64、H.264 RTSP、Intel VAAPI 或 CPU 回退，最多两组物理设备、每组最多两路画面。它保留现有 Frigate、go2rtc、Camera Portal、LAN Caddy、Cloudflare Tunnel/Tailscale 的结构，但把家庭服务器专用快照改造成可重复安装、可验证、可安全更新的发行版。

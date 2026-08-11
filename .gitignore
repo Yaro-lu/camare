@@ -1,4 +1,5 @@
 # Runtime configuration and secrets
+/camare.ini
 **/.env
 **/.env.*
 !**/.env.example
@@ -11,6 +12,7 @@
 **/*.backup
 **/__pycache__/
 **/*.py[cod]
+**/node_modules/
 
 # Frigate runtime state
 frigate-1panel/config/frigate.db*

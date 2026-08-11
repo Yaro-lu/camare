@@ -2,7 +2,7 @@
 
 升级的唯一长期输入是源码版本、`camare.ini` 和它引用的密钥文件。不要直接修改 `/opt/1panel/docker/compose/camare-<instance-id>` 中的生成文件；下一次 `apply` 会按声明配置重新生成。
 
-> Linux x86-64 / CPU / 两路合成 H.264 隔离 E2E 已通过；正式 Release 与真实设备矩阵仍待完成。没有经过隔离验收的 commit 不应直接用于现网升级。
+> `v0.1.0` 已完成正式 Release 门禁，Linux x86-64 / CPU / 两路合成 H.264 隔离 E2E 已通过；真实设备矩阵仍需分别验证。不要把未经隔离验收的普通 commit 直接用于现网升级。
 
 ## 升级前
 
@@ -25,7 +25,7 @@
 
 ## 获取版本
 
-正式 Release 发布后，优先使用经过审查的 tag，而不是让生产机长期跟随 `main`：
+从 `v0.1.0` 起，生产部署优先使用经过审查的正式 tag，而不是让生产机长期跟随 `main`：
 
 ```sh
 git fetch --tags --prune

@@ -2,7 +2,7 @@
 
 本页描述当前声明式部署路径的边界，不代表 Frigate 本身的全部能力。
 
-> 验证状态：本地配置、渲染、事务、Portal 和策略自动化测试已通过；Linux x86-64 / CPU / 两路合成 H.264 的隔离 Docker E2E 已通过，真实摄像头矩阵和正式 Release 验收待执行。
+> `v0.1.0` 已正式发布。配置、渲染、事务、Portal、依赖审查、完整历史秘密扫描和镜像漏洞门禁已通过；Linux x86-64 / CPU / 两路合成 H.264 的隔离 Docker E2E 已通过，真实摄像头与硬件矩阵仍需分别验收。
 
 2026-08-11 的隔离验收使用 Docker Engine 29.5.2、Compose 5.1.4、Frigate 0.17.2 和 MediaMTX 合成两路 H.264，覆盖构建、健康等待、go2rtc producer、连续 MP4、VOD 回放清单、备份、恢复、卸载、重装和录像保留。该结果不包含 Intel VAAPI、NAS 断连、真实摄像头音频或移动端浏览器矩阵。
 
@@ -15,7 +15,7 @@
 | Docker Engine + Compose v2 | 支持 | 必须支持 `docker compose up --wait`；`doctor` 会实测，Compose v1 不支持 |
 | rootless Docker / userns-remap | 不支持 | 本地 file secret 是 bind mount；发行权限模型依赖 rootful Docker 的固定数值 UID/GID |
 | 1Panel | 可选 | 只作为生成后的单一 Compose 管理界面 |
-| ARM / ARM64 | 不支持 | 当前镜像、检测和发行测试未覆盖 |
+| ARM / ARM64 | 不支持完整部署 | Portal/Caddy Release 镜像包含 arm64，但 `doctor`、Frigate 完整栈和部署 E2E 尚未覆盖 |
 | Windows / macOS 主机 | 不支持部署 | 可作为观看客户端；不能通过 `doctor` 主机检查 |
 
 ## 摄像头和画面规模
@@ -37,7 +37,7 @@
 | 模式 | 状态 | 注意事项 |
 |---|---|---|
 | CPU | 支持 | 不映射 `/dev/dri`；旧 CPU 或高码率多路可能负载较高 |
-| Intel VAAPI | 支持 | 需要可读写的 `/dev/dri/renderD<number>` 和 `i965` 或 `iHD` |
+| Intel VAAPI | 条件支持 | 配置与校验路径已覆盖；需要可读写的 `/dev/dri/renderD<number>` 和 `i965` 或 `iHD`，本版本未完成 Intel 实机 E2E |
 | AMD VAAPI | 不支持 | 当前校验只接受 Intel 发行路径 |
 | NVIDIA | 不支持 | 当前没有 NVIDIA runtime/驱动模板 |
 

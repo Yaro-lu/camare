@@ -152,6 +152,18 @@ class ReleasePolicyTests(unittest.TestCase):
         self.assertIn("artifact-metadata: write", workflow)
         self.assertIn("GHCR packages must be set to Public", workflow)
         self.assertIn("anonymous digest pulls", workflow)
+        self.assertIn("Verify anonymous GHCR digest access", workflow)
+        self.assertIn('DOCKER_CONFIG="$anonymous_docker_config"', workflow)
+        self.assertIn(
+            '"ghcr.io/yaro-lu/camare-portal@$PORTAL_DIGEST"', workflow
+        )
+        self.assertIn(
+            '"ghcr.io/yaro-lu/camare-lan-caddy@$LAN_CADDY_DIGEST"', workflow
+        )
+        self.assertLess(
+            workflow.index("Verify anonymous GHCR digest access"),
+            workflow.index("Attest Portal provenance"),
+        )
         for output in (
             "portal_amd64_digest",
             "portal_arm64_digest",

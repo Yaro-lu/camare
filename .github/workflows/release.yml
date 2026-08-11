@@ -266,6 +266,20 @@ jobs:
           printf '%s\n' \
             'Before first release, both GHCR packages must be set to Public; verify anonymous digest pulls.' \
             >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify anonymous GHCR digest access
+        env:
+          PORTAL_DIGEST: ${{ steps.publish-images.outputs.portal_digest }}
+          LAN_CADDY_DIGEST: ${{ steps.publish-images.outputs.lan_caddy_digest }}
+        run: |
+          anonymous_docker_config="$(mktemp -d "$RUNNER_TEMP/anonymous-docker.XXXXXX")"
+          trap 'rm -rf "$anonymous_docker_config"' EXIT
+          for image in \
+            "ghcr.io/yaro-lu/camare-portal@$PORTAL_DIGEST" \
+            "ghcr.io/yaro-lu/camare-lan-caddy@$LAN_CADDY_DIGEST"
+          do
+            DOCKER_CONFIG="$anonymous_docker_config" \
+              docker buildx imagetools inspect "$image" >/dev/null
+          done
       - name: Attest Portal provenance
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:

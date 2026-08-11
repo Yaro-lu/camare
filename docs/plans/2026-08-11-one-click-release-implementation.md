@@ -1,5 +1,7 @@
 # Camare One-click Release Implementation Plan
 
+> 历史实施记录：最终发布行为以根 README 和兼容性矩阵为准；`v0.1.0` 安装器仍使用 local build，GHCR 镜像尚未接入声明式安装路径。
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 把当前家庭服务器快照改造成 checkout 保持干净、支持两组双路、可诊断、可验证、可隔离测试和可版本发布的一键部署项目。

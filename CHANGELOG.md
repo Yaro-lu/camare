@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+暂无未发布变更。
+
+## [0.1.0]
+
+发布日期：2026-08-11
+
 ### Added
 
 - 添加 MIT License，为公开使用、修改和分发提供明确许可。
@@ -12,6 +18,7 @@
 - 添加实例级备份、dry-run 恢复和安全卸载生命周期能力；录像与 secret 内容不进入应用状态归档。
 - 添加公开 Quickstart、兼容性、安全、入口、升级、备份/恢复、回滚、卸载、排错和 legacy 迁移文档。
 - 添加可信归档校验、SQLite 一致性快照、POSIX 元数据恢复和失败恢复副本保留测试。
+- 添加 amd64/arm64 Portal 与 LAN Caddy GHCR 镜像、SPDX SBOM、构建来源证明、确定性源码归档和 SHA256 校验和发布流程。
 
 ### Changed
 
@@ -35,4 +42,5 @@
 
 ### Verification status
 
-- 自动化测试已覆盖配置、渲染、事务、生命周期、Portal 和发行策略；Linux x86-64 / CPU / 两路合成 H.264 的隔离 Docker E2E 已通过，正式 Release 与真实设备矩阵仍待验收。
+- GitHub Actions 的 Python、Go、Node、配置渲染、依赖审查、完整历史秘密扫描和 HIGH/CRITICAL 镜像漏洞门禁全部通过。
+- Linux x86-64 / CPU / 两路合成 H.264 的隔离 Docker E2E 已通过；真实摄像头、Intel VAAPI、NAS 重连、ARM 整栈和跨手机浏览器矩阵仍需分别验收。
