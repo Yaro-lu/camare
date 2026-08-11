@@ -227,14 +227,12 @@ jobs:
             )"
             [[ "$semver_digest" == "$manifest_digest" ]]
 
-            printf '%s %s\n' "$candidate" "$manifest_digest" \
-              >> "$asset_dir/image-digests.txt"
-            printf '%s %s\n' "$semver_ref" "$manifest_digest" \
-              >> "$asset_dir/image-digests.txt"
-            printf '%s@%s linux/amd64\n' "$repository" "$amd64_digest" \
-              >> "$asset_dir/image-digests.txt"
-            printf '%s@%s linux/arm64\n' "$repository" "$arm64_digest" \
-              >> "$asset_dir/image-digests.txt"
+            {
+              printf '%s %s\n' "$candidate" "$manifest_digest"
+              printf '%s %s\n' "$semver_ref" "$manifest_digest"
+              printf '%s@%s linux/amd64\n' "$repository" "$amd64_digest"
+              printf '%s@%s linux/arm64\n' "$repository" "$arm64_digest"
+            } >> "$asset_dir/image-digests.txt"
 
             case "$key" in
               portal)
@@ -319,6 +317,7 @@ jobs:
           ASSET_DIR: ${{ steps.publish-images.outputs.asset_dir }}
         run: |
           version="${GITHUB_REF_NAME#v}"
+          checksum_file="$(mktemp "$RUNNER_TEMP/camare-checksums.XXXXXX")"
           git archive \
             --format=tar \
             --prefix="camare-$version/" \
@@ -329,8 +328,9 @@ jobs:
             export LC_ALL=C
             find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' \
               | sort -z \
-              | xargs -0 sha256sum > SHA256SUMS
+              | xargs -0 sha256sum > "$checksum_file"
           )
+          mv "$checksum_file" "$ASSET_DIR/SHA256SUMS"
           bash scripts/release-check.sh checksums "$GITHUB_REF_NAME" "$ASSET_DIR"
       - name: Create verified GitHub Release
         env:

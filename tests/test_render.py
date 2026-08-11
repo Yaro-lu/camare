@@ -205,6 +205,12 @@ path = /live/201
             self.assertIn("      - media_backend", portal_service)
             self.assertIn("      - portal_ingress", portal_service)
             self.assertIn("      - portal_ingress", lan_service)
+            self.assertIn(
+                'test: ["CMD", "wget", "-q", "-T", "5", "--spider", '
+                '"http://127.0.0.1:8080/healthz"]',
+                lan_service,
+            )
+            self.assertNotIn('"curl"', lan_service)
             self.assertNotIn("devices:", compose)
             self.assertNotIn("LIBVA_DRIVER_NAME", compose)
             self.assertNotIn("preset-vaapi", frigate)

@@ -71,6 +71,36 @@ class SupplyChainPolicyTests(unittest.TestCase):
         self.assertIn(source_label, portal_dockerfile)
         self.assertIn(source_label, caddy_dockerfile)
 
+    def test_caddy_image_rebuilds_fixed_sources_without_vulnerable_dependencies(
+        self,
+    ) -> None:
+        dockerfile = (
+            REPOSITORY_ROOT / "camera-portal-lan" / "caddy" / "Dockerfile"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "FROM golang:1.26.5-alpine3.24@sha256:"
+            "0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 "
+            "AS build",
+            dockerfile,
+        )
+        self.assertIn("GOTOOLCHAIN=local", dockerfile)
+        self.assertIn(
+            "go get github.com/caddyserver/caddy/v2@v2.11.4",
+            dockerfile,
+        )
+        self.assertIn("golang.org/x/text@v0.39.0", dockerfile)
+        self.assertIn("google.golang.org/grpc@v1.82.1", dockerfile)
+        self.assertIn("go mod verify", dockerfile)
+        self.assertIn("CGO_ENABLED=0 go build", dockerfile)
+        self.assertIn("-mod=readonly", dockerfile)
+        self.assertIn("apk del --no-network curl", dockerfile)
+        self.assertIn(
+            "COPY --from=build /out/caddy /usr/bin/caddy",
+            dockerfile,
+        )
+        self.assertNotIn("apk upgrade", dockerfile)
+
     def test_pr_ci_has_immutable_least_privilege_execution(self) -> None:
         workflow = (
             REPOSITORY_ROOT / ".github" / "workflows" / "checks.yml"
@@ -184,7 +214,9 @@ class SupplyChainPolicyTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("bash -n install.sh", workflow)
-        self.assertIn('"$SHELLCHECK_IMAGE"', workflow)
+        self.assertIn(
+            '"$SHELLCHECK_IMAGE" shellcheck --exclude=SC1007 \\', workflow
+        )
 
         for project in (
             "frigate-1panel",

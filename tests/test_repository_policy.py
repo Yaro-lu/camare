@@ -84,6 +84,34 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertNotIn("gid:", top_level_secrets)
         self.assertNotIn("mode:", top_level_secrets)
 
+    def test_caddy_healthchecks_use_busybox_wget_without_curl(self) -> None:
+        compose_paths = (
+            "deploy/compose.base.yaml",
+            "camera-portal-lan/compose.yaml",
+        )
+
+        for relative_path in compose_paths:
+            with self.subTest(compose=relative_path):
+                compose = (REPOSITORY_ROOT / relative_path).read_text(
+                    encoding="utf-8"
+                )
+                caddy_service = compose.split("  lan-caddy:", 1)[1]
+                if relative_path == "deploy/compose.base.yaml":
+                    caddy_service = caddy_service.split(
+                        "@@CLOUDFLARED_SERVICE@@", 1
+                    )[0]
+                else:
+                    caddy_service = caddy_service.split("\nnetworks:\n", 1)[0]
+
+                self.assertIn("healthcheck:", caddy_service)
+                self.assertIn("wget", caddy_service)
+                self.assertIn("--spider", caddy_service)
+                self.assertIn(
+                    "http://127.0.0.1:8080/healthz",
+                    caddy_service,
+                )
+                self.assertNotIn("curl", caddy_service)
+
     def test_compose_projects_do_not_claim_global_container_names(self) -> None:
         for relative_path in COMPOSE_FILES:
             with self.subTest(compose=relative_path):

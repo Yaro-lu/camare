@@ -111,7 +111,8 @@ jobs:
           bash -n frigate-1panel/verify.sh
       - name: Run ShellCheck
         run: |
-          docker run --rm --volume "$PWD:/mnt:ro" --workdir /mnt "$SHELLCHECK_IMAGE" \
+          # SC1007: the two `CDPATH= cd` assignments intentionally use POSIX empty-value syntax.
+          docker run --rm --volume "$PWD:/mnt:ro" --workdir /mnt "$SHELLCHECK_IMAGE" shellcheck --exclude=SC1007 \
             install.sh \
             camera-portal-lan/scripts/verify.sh \
             frigate-1panel/find-camera-ip.sh \
