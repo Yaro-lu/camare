@@ -279,6 +279,25 @@ class SupplyChainPolicyTests(unittest.TestCase):
         self.assertNotIn("docker login", workflow)
         self.assertNotIn("docker push", workflow)
 
+    def test_gitleaks_ignores_only_reviewed_test_fixture_fingerprints(self) -> None:
+        ignore_path = REPOSITORY_ROOT / ".gitleaksignore"
+        self.assertTrue(ignore_path.is_file(), ".gitleaksignore is required")
+
+        fingerprints = {
+            line.strip()
+            for line in ignore_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        self.assertEqual(
+            fingerprints,
+            {
+                "460bc56ce8fdbfcdd61005c11a53d343d5d5306e:"
+                "camera-portal/internal/portal/http_test.go:generic-api-key:21",
+                "460bc56ce8fdbfcdd61005c11a53d343d5d5306e:"
+                "camera-portal/internal/portal/http_test.go:generic-api-key:626",
+            },
+        )
+
     def test_dependabot_tracks_workflows_packages_and_container_manifests(self) -> None:
         config_path = REPOSITORY_ROOT / ".github" / "dependabot.yml"
         self.assertTrue(config_path.is_file(), ".github/dependabot.yml is required")
