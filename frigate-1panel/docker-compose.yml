@@ -1,9 +1,8 @@
-name: frigate
+name: "${FRIGATE_PROJECT_NAME:-frigate}"
 
 services:
   frigate:
-    container_name: frigate
-    image: ghcr.io/blakeblackshear/frigate:0.17.2@sha256:d4351369984d4a9e2a49ac59736f6490856a7ea11f7790040746d21496967010
+    image: "${FRIGATE_IMAGE:-ghcr.io/blakeblackshear/frigate:0.17.2@sha256:d4351369984d4a9e2a49ac59736f6490856a7ea11f7790040746d21496967010}"
     restart: unless-stopped
     stop_grace_period: 30s
     shm_size: "256mb"

@@ -39,10 +39,23 @@ ip -4 addr show |
 docker network inspect "$portal_network" >/dev/null 2>&1 ||
 	fail "external Docker network ${portal_network} does not exist"
 
-docker inspect camera-portal \
-	--format '{{json .NetworkSettings.Networks}}' |
-	grep -Fq "\"${portal_network}\"" ||
-	fail "camera-portal is not attached to ${portal_network}"
+portal_id=""
+for container_id in $(
+	docker network inspect "$portal_network" \
+		--format '{{range $id, $_ := .Containers}}{{$id}} {{end}}'
+); do
+	service="$(
+		docker inspect "$container_id" \
+			--format '{{index .Config.Labels "com.docker.compose.service"}}'
+	)"
+	if [ "$service" = "camera-portal" ]; then
+		[ -z "$portal_id" ] ||
+			fail "multiple camera-portal services are attached to ${portal_network}"
+		portal_id="$container_id"
+	fi
+done
+[ -n "$portal_id" ] ||
+	fail "camera-portal Compose service is not attached to ${portal_network}"
 
 # --quiet prevents Compose from printing the rendered LAN secret.
 docker compose config --quiet
@@ -50,27 +63,28 @@ docker compose build lan-caddy
 docker compose run --rm --no-deps --entrypoint caddy lan-caddy \
 	validate --config /etc/caddy/Caddyfile --adapter caddyfile
 
-if docker inspect camera-portal-lan-caddy >/dev/null 2>&1; then
+lan_caddy_id="$(docker compose ps -q lan-caddy)"
+if [ -n "$lan_caddy_id" ]; then
 	running="$(
 		docker inspect \
 			--format '{{.State.Running}}' \
-			camera-portal-lan-caddy
+			"$lan_caddy_id"
 	)"
 	[ "$running" = "true" ] ||
-		fail "camera-portal-lan-caddy exists but is not running"
+		fail "lan-caddy exists but is not running"
 
 	health="$(
 		docker inspect \
 			--format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
-			camera-portal-lan-caddy
+			"$lan_caddy_id"
 	)"
 	[ "$health" = "healthy" ] ||
-		fail "camera-portal-lan-caddy is not healthy (status: $health)"
+		fail "lan-caddy is not healthy (status: $health)"
 
 	bindings="$(
 		docker inspect \
 			--format '{{range .NetworkSettings.Ports}}{{range .}}{{printf "%s:%s\n" .HostIp .HostPort}}{{end}}{{end}}' \
-			camera-portal-lan-caddy
+			"$lan_caddy_id"
 	)"
 	[ "$bindings" = "${lan_ip}:${lan_port}" ] ||
 		fail "unexpected published binding: ${bindings:-none}"

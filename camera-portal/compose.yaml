@@ -1,15 +1,14 @@
-name: camera-portal
+name: "${PORTAL_PROJECT_NAME:-camera-portal}"
 
 services:
   camera-portal:
     build:
       context: .
       dockerfile: Dockerfile
-      # Build-only host networking follows the server's existing Mihomo route.
-      # The running container still uses only the isolated Frigate network below.
-      network: host
-    image: local/camera-portal:1.0.0
-    container_name: camera-portal
+      # Use normal BuildKit networking by default. Set PORTAL_BUILD_NETWORK=host
+      # only when the host's proxy route explicitly requires host networking.
+      network: "${PORTAL_BUILD_NETWORK:-default}"
+    image: "${CAMERA_PORTAL_IMAGE:-local/camera-portal:1.0.0}"
     restart: unless-stopped
     user: "65532:65532"
     read_only: true

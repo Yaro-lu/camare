@@ -1,15 +1,14 @@
-name: camera-portal-lan
+name: "${LAN_PROJECT_NAME:-camera-portal-lan}"
 
 services:
   lan-caddy:
     build:
       context: ./caddy
       dockerfile: Dockerfile
-      network: host
-      args:
-        CADDY_VERSION: "2.11.4"
-    image: local/camera-portal-lan-caddy:2.11.4
-    container_name: camera-portal-lan-caddy
+      # Use normal BuildKit networking by default. Set
+      # LAN_CADDY_BUILD_NETWORK=host only for an explicit host proxy route.
+      network: "${LAN_CADDY_BUILD_NETWORK:-default}"
+    image: "${LAN_CADDY_IMAGE:-local/camera-portal-lan-caddy:2.11.4}"
     restart: unless-stopped
     init: true
     user: "1000:1000"
@@ -42,14 +41,13 @@ services:
     healthcheck:
       test:
         - CMD
-        - curl
-        - --fail
-        - --silent
-        - --show-error
-        - --max-time
+        - wget
+        - -q
+        - -T
         - "5"
         - --header
         - "Host: ${LAN_BIND_IP:?set LAN_BIND_IP in .env}:${LAN_PORT:-8088}"
+        - --spider
         - http://127.0.0.1:8080/healthz
       interval: 30s
       timeout: 5s

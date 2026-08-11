@@ -1,0 +1,5 @@
+# Reviewed synthetic access-key fixture; never used outside the Go test suite.
+460bc56ce8fdbfcdd61005c11a53d343d5d5306e:camera-portal/internal/portal/http_test.go:generic-api-key:21
+
+# RFC WebSocket handshake test vector; not a credential.
+460bc56ce8fdbfcdd61005c11a53d343d5d5306e:camera-portal/internal/portal/http_test.go:generic-api-key:626

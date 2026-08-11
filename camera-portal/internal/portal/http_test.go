@@ -52,6 +52,7 @@ func newTestAppWithCameras(
 		"pair-invalid.html":        &fstest.MapFile{Data: []byte("invalid")},
 		"admin.html":               &fstest.MapFile{Data: []byte("admin")},
 		"assets/client.js":         &fstest.MapFile{Data: []byte("export {};")},
+		"assets/camera-groups.mjs": &fstest.MapFile{Data: []byte("export {};")},
 		"assets/timeline-core.mjs": &fstest.MapFile{Data: []byte("export {};")},
 		"assets/unbound.js":        &fstest.MapFile{Data: []byte("fetch('/api/config');")},
 		"assets/hls.min.js":        &fstest.MapFile{Data: []byte("window.Hls = {};")},
@@ -283,6 +284,77 @@ func TestPublicAndAdminSurfacesAreSeparated(t *testing.T) {
 	app.AdminHandler().ServeHTTP(adminResponse, adminRequest)
 	if adminResponse.Code != http.StatusOK {
 		t.Fatalf("allowed identity status = %d, body = %s", adminResponse.Code, adminResponse.Body.String())
+	}
+}
+
+func TestAdminCanBeExplicitlyDisabledForLanOnlyDeployment(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	static := fstest.MapFS{
+		"client.html":       &fstest.MapFile{Data: []byte("client")},
+		"unbound.html":      &fstest.MapFile{Data: []byte("unbound")},
+		"pair.html":         &fstest.MapFile{Data: []byte("pair")},
+		"pair-invalid.html": &fstest.MapFile{Data: []byte("invalid")},
+		"admin.html":        &fstest.MapFile{Data: []byte("admin")},
+	}
+	app, err := NewApp(Config{
+		PublicBaseURL:  "http://192.168.1.250:8088",
+		LocalBaseURL:   "http://192.168.1.250:8088",
+		LocalAccessKey: testLocalAccessKey,
+		AdminDisabled:  true,
+		FrigateURL:     "http://frigate.test",
+		Go2RTCURL:      "http://frigate.test",
+		Cameras:        []Camera{{ID: "ptz_view", Name: "PTZ"}},
+		CameraGroups: []CameraGroup{{
+			ID:        "yard",
+			Name:      "Yard",
+			CameraIDs: [2]string{"ptz_view", ""},
+		}},
+	}, store, static, nil)
+	if err != nil {
+		t.Fatalf("LAN-only app: %v", err)
+	}
+
+	health := httptest.NewRecorder()
+	app.AdminHandler().ServeHTTP(
+		health,
+		httptest.NewRequest(http.MethodGet, "/healthz", nil),
+	)
+	if health.Code != http.StatusOK {
+		t.Fatalf("disabled admin health = %d", health.Code)
+	}
+
+	for _, path := range []string{"/", "/api/devices", "/api/pairings"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Tailscale-User-Login", "owner@example.com")
+		response := httptest.NewRecorder()
+		app.AdminHandler().ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("disabled admin %s = %d, want 404", path, response.Code)
+		}
+	}
+}
+
+func TestAdminIdentityIsRequiredUnlessExplicitlyDisabled(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewApp(Config{
+		PublicBaseURL: "http://192.168.1.250:8088",
+		FrigateURL:    "http://frigate.test",
+		Go2RTCURL:     "http://frigate.test",
+		Cameras:       []Camera{{ID: "ptz_view", Name: "PTZ"}},
+		CameraGroups: []CameraGroup{{
+			ID:        "yard",
+			Name:      "Yard",
+			CameraIDs: [2]string{"ptz_view", ""},
+		}},
+	}, store, fstest.MapFS{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "ADMIN_ORIGIN") {
+		t.Fatalf("missing admin configuration error = %v", err)
 	}
 }
 
@@ -672,6 +744,62 @@ func TestPublicConfigUsesRecordingTimezone(t *testing.T) {
 	}
 }
 
+func TestPublicConfigExposesOnlyNonEmptyCameraGroups(t *testing.T) {
+	cameras := []Camera{
+		{ID: "ptz_view", Name: "云台"},
+		{ID: "fixed_view", Name: "枪机"},
+		{ID: "front_ptz_view", Name: "门前云台"},
+		{ID: "front_fixed_view", Name: "门前固定"},
+	}
+	groups := []CameraGroup{
+		{ID: "yard", Name: "院子", CameraIDs: [2]string{"ptz_view", "fixed_view"}},
+		{ID: "reserved", Name: "预留", CameraIDs: [2]string{}},
+		{ID: "front", Name: "门前", CameraIDs: [2]string{"front_ptz_view", "front_fixed_view"}},
+	}
+	app, store := newTestAppWithCameras(t, "http://frigate.test", cameras, groups)
+	cookie := pairSession(t, app, store)
+	request := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	app.PublicHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("public config status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	var payload struct {
+		Groups []map[string]json.RawMessage `json:"camera_groups"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Groups) != 2 {
+		t.Fatalf("public camera groups = %s, want two non-empty groups", response.Body.String())
+	}
+
+	wantIDs := []string{"yard", "front"}
+	wantCameras := [][]string{{"ptz_view", "fixed_view"}, {"front_ptz_view", "front_fixed_view"}}
+	for index, group := range payload.Groups {
+		for field := range group {
+			switch field {
+			case "id", "name", "camera_ids":
+			default:
+				t.Fatalf("public camera group leaked management field %q", field)
+			}
+		}
+		var id string
+		var cameraIDs []string
+		if err := json.Unmarshal(group["id"], &id); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(group["camera_ids"], &cameraIDs); err != nil {
+			t.Fatal(err)
+		}
+		if id != wantIDs[index] || fmt.Sprint(cameraIDs) != fmt.Sprint(wantCameras[index]) {
+			t.Fatalf("public group %d = %q / %v", index, id, cameraIDs)
+		}
+	}
+}
+
 func TestRevokedDeviceCannotReauthorizeLive(t *testing.T) {
 	app, store := newTestApp(t, "http://frigate.test")
 	cookie := pairSession(t, app, store)
@@ -917,6 +1045,19 @@ func TestPlaybackLibraryIsSelfHostedWithJavascriptContentType(t *testing.T) {
 	}
 	if got := response.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("timeline-core.mjs Cache-Control = %q, want no-store", got)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/assets/camera-groups.mjs?v=20260811-1", nil)
+	response = httptest.NewRecorder()
+	app.PublicHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("camera-groups.mjs status = %d", response.Code)
+	}
+	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "javascript") {
+		t.Fatalf("camera-groups.mjs content type = %q", contentType)
+	}
+	if got := response.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("camera-groups.mjs Cache-Control = %q, want no-store", got)
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/assets/hls.min.js", nil)

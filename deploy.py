@@ -56,6 +56,11 @@ SAFE_ADMIN_NETWORKS = RFC1918_NETWORKS + (
     ipaddress.ip_network("100.64.0.0/10"),
     ipaddress.ip_network("127.0.0.0/8"),
 )
+CLOUDFLARED_IMAGE = (
+    "cloudflare/cloudflared:2026.7.3@"
+    "sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf"
+)
+CLOUDFLARED_LEGACY_LATEST = "cloudflare/cloudflared:" + "latest"
 
 
 class InstallerError(RuntimeError):
@@ -95,6 +100,19 @@ class InstallConfig:
 class SecretInputs:
     camera_password: str | None
     cloudflare_token: str | None
+
+
+def normalize_cloudflared_image(value: str) -> str:
+    """Return an immutable cloudflared reference and migrate the old latest tag."""
+
+    candidate = value.strip()
+    if not candidate or candidate == CLOUDFLARED_LEGACY_LATEST:
+        return CLOUDFLARED_IMAGE
+    if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", candidate):
+        raise InstallerError(
+            "CLOUDFLARED_IMAGE 必须固定到 sha256 digest；请使用示例中的完整镜像。"
+        )
+    return candidate
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -896,8 +914,8 @@ def build_env_mappings(
     )
     cloudflare_mapping.update(
         {
-            "CLOUDFLARED_IMAGE": cloudflare_mapping.get(
-                "CLOUDFLARED_IMAGE", "cloudflare/cloudflared:latest"
+            "CLOUDFLARED_IMAGE": normalize_cloudflared_image(
+                cloudflare_mapping.get("CLOUDFLARED_IMAGE", "")
             ),
             "PORTAL_INGRESS_NETWORK": config.portal_network,
         }

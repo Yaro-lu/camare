@@ -1,0 +1,95 @@
+services:
+  source-primary:
+    image: "${MEDIAMTX_IMAGE:?set MEDIAMTX_IMAGE to an immutable digest}"
+    restart: "no"
+    read_only: true
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 192m
+    cpus: 0.50
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
+    ports:
+      - "${E2E_BIND_IP:?set E2E_BIND_IP}:${SOURCE_PRIMARY_PORT:?set SOURCE_PRIMARY_PORT}:8554/tcp"
+    environment:
+      MTX_LOGLEVEL: warn
+      MTX_RTSPTRANSPORTS: tcp
+      MTX_PATHS_CAM1_RUNONINIT: >-
+        ffmpeg -nostdin -hide_banner -loglevel error -re -f lavfi
+        -i testsrc=size=320x180:rate=2 -an -c:v libx264 -preset ultrafast
+        -tune zerolatency -pix_fmt yuv420p -g 4 -threads 1
+        -f rtsp -rtsp_transport tcp
+        rtsp://127.0.0.1:$$RTSP_PORT/$$MTX_PATH
+      MTX_PATHS_CAM1_RUNONINITRESTART: "true"
+      MTX_PATHS_CAM2_RUNONINIT: >-
+        ffmpeg -nostdin -hide_banner -loglevel error -re -f lavfi
+        -i smptebars=size=320x180:rate=2 -an -c:v libx264 -preset ultrafast
+        -tune zerolatency -pix_fmt yuv420p -g 4 -threads 1
+        -f rtsp -rtsp_transport tcp
+        rtsp://127.0.0.1:$$RTSP_PORT/$$MTX_PATH
+      MTX_PATHS_CAM2_RUNONINITRESTART: "true"
+    labels:
+      com.yaro-lu.camare.e2e: "true"
+      com.yaro-lu.camare.e2e.run-id: "${E2E_RUN_ID:?set E2E_RUN_ID}"
+    networks:
+      - synthetic
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "1"
+
+  source-secondary:
+    profiles: ["four-streams"]
+    image: "${MEDIAMTX_IMAGE:?set MEDIAMTX_IMAGE to an immutable digest}"
+    restart: "no"
+    read_only: true
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 192m
+    cpus: 0.50
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
+    ports:
+      - "${E2E_BIND_IP:?set E2E_BIND_IP}:${SOURCE_SECONDARY_PORT:?set SOURCE_SECONDARY_PORT}:8554/tcp"
+    environment:
+      MTX_LOGLEVEL: warn
+      MTX_RTSPTRANSPORTS: tcp
+      MTX_PATHS_CAM3_RUNONINIT: >-
+        ffmpeg -nostdin -hide_banner -loglevel error -re -f lavfi
+        -i testsrc2=size=320x180:rate=2 -an -c:v libx264 -preset ultrafast
+        -tune zerolatency -pix_fmt yuv420p -g 4 -threads 1
+        -f rtsp -rtsp_transport tcp
+        rtsp://127.0.0.1:$$RTSP_PORT/$$MTX_PATH
+      MTX_PATHS_CAM3_RUNONINITRESTART: "true"
+      MTX_PATHS_CAM4_RUNONINIT: >-
+        ffmpeg -nostdin -hide_banner -loglevel error -re -f lavfi
+        -i color=c=blue:size=320x180:rate=2 -an -c:v libx264 -preset ultrafast
+        -tune zerolatency -pix_fmt yuv420p -g 4 -threads 1
+        -f rtsp -rtsp_transport tcp
+        rtsp://127.0.0.1:$$RTSP_PORT/$$MTX_PATH
+      MTX_PATHS_CAM4_RUNONINITRESTART: "true"
+    labels:
+      com.yaro-lu.camare.e2e: "true"
+      com.yaro-lu.camare.e2e.run-id: "${E2E_RUN_ID:?set E2E_RUN_ID}"
+    networks:
+      - synthetic
+    stop_grace_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "1"
+
+networks:
+  synthetic:
+    driver: bridge

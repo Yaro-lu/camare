@@ -33,10 +33,17 @@ type Camera struct {
 	Name string `json:"name"`
 }
 
+type publicCameraGroup struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	CameraIDs []string `json:"camera_ids"`
+}
+
 type Config struct {
 	PublicBaseURL              string
 	LocalBaseURL               string
 	LocalAccessKey             string
+	AdminDisabled              bool
 	AdminOrigin                string
 	AdminLogin                 string
 	FrigateURL                 string
@@ -113,12 +120,20 @@ func NewApp(config Config, store *Store, static fs.FS, logger *slog.Logger) (*Ap
 	if err != nil || go2rtcURL.Scheme == "" || go2rtcURL.Host == "" {
 		return nil, errors.New("GO2RTC_URL must be an absolute URL")
 	}
-	adminURL, err := url.Parse(config.AdminOrigin)
-	if err != nil || adminURL.Scheme == "" || adminURL.Host == "" {
-		return nil, errors.New("ADMIN_ORIGIN must be an absolute URL")
-	}
-	if strings.TrimSpace(config.AdminLogin) == "" {
-		return nil, errors.New("ADMIN_TAILSCALE_LOGIN is required")
+	var adminOrigin string
+	if config.AdminDisabled {
+		if strings.TrimSpace(config.AdminOrigin) != "" || strings.TrimSpace(config.AdminLogin) != "" {
+			return nil, errors.New("disabled admin requires empty ADMIN_ORIGIN and ADMIN_TAILSCALE_LOGIN")
+		}
+	} else {
+		adminURL, adminErr := url.Parse(config.AdminOrigin)
+		if adminErr != nil || adminURL.Scheme == "" || adminURL.Host == "" {
+			return nil, errors.New("ADMIN_ORIGIN must be an absolute URL")
+		}
+		if strings.TrimSpace(config.AdminLogin) == "" {
+			return nil, errors.New("ADMIN_TAILSCALE_LOGIN is required")
+		}
+		adminOrigin = adminURL.Scheme + "://" + adminURL.Host
 	}
 	if len(config.Cameras) == 0 {
 		return nil, errors.New("at least one camera is required")
@@ -175,7 +190,7 @@ func NewApp(config Config, store *Store, static fs.FS, logger *slog.Logger) (*Ap
 		localOrigin:    localOrigin,
 		localHost:      strings.TrimPrefix(localOrigin, "http://"),
 		localAccessKey: localAccessKey,
-		adminOrigin:    adminURL.Scheme + "://" + adminURL.Host,
+		adminOrigin:    adminOrigin,
 	}
 	app.cameraControl = newCameraControl(frigateURL, cameraByID, config.CameraGroups)
 	return app, nil
@@ -188,6 +203,7 @@ func (a *App) PublicHandler() http.Handler {
 	mux.HandleFunc("POST /api/pair/redeem", a.redeemPairing)
 	mux.HandleFunc("GET /assets/common.css", a.staticFile("assets/common.css"))
 	mux.HandleFunc("GET /assets/client.js", a.staticFile("assets/client.js"))
+	mux.HandleFunc("GET /assets/camera-groups.mjs", a.staticFile("assets/camera-groups.mjs"))
 	mux.HandleFunc("GET /assets/timeline-core.mjs", a.staticFile("assets/timeline-core.mjs"))
 	mux.HandleFunc("GET /assets/pair.js", a.staticFile("assets/pair.js"))
 	mux.HandleFunc("GET /assets/unbound.js", a.staticFile("assets/unbound.js"))
@@ -208,6 +224,9 @@ func (a *App) PublicHandler() http.Handler {
 func (a *App) AdminHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", a.health)
+	if a.config.AdminDisabled {
+		return a.securityHeaders(mux)
+	}
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /", a.adminHome)
 	protected.HandleFunc("GET /assets/admin.css", a.staticFile("assets/admin.css"))
@@ -302,9 +321,31 @@ func (a *App) publicConfig(w http.ResponseWriter, _ *http.Request) {
 	_, offset := now.Zone()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cameras":                      a.config.Cameras,
+		"camera_groups":                a.publicCameraGroups(),
 		"recording_timezone":           a.config.RecordingTimezone,
 		"recording_utc_offset_seconds": offset,
 	})
+}
+
+func (a *App) publicCameraGroups() []publicCameraGroup {
+	groups := make([]publicCameraGroup, 0, len(a.config.CameraGroups))
+	for _, group := range a.config.CameraGroups {
+		cameraIDs := make([]string, 0, len(group.CameraIDs))
+		for _, cameraID := range group.CameraIDs {
+			if cameraID != "" {
+				cameraIDs = append(cameraIDs, cameraID)
+			}
+		}
+		if len(cameraIDs) == 0 {
+			continue
+		}
+		groups = append(groups, publicCameraGroup{
+			ID:        group.ID,
+			Name:      group.Name,
+			CameraIDs: cameraIDs,
+		})
+	}
+	return groups
 }
 
 func (a *App) recordings(w http.ResponseWriter, r *http.Request) {

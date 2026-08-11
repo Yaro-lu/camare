@@ -2,36 +2,121 @@ name: checks
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
 
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACTIONLINT_IMAGE: rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+  GITLEAKS_IMAGE: zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+  SHELLCHECK_IMAGE: koalaman/shellcheck-alpine:v0.11.0@sha256:9955be09ea7f0dbf7ae942ac1f2094355bb30d96fffba0ec09f5432207544002
+  TRIVY_IMAGE: aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+
 jobs:
+  repository-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Lint GitHub Actions workflows
+        run: docker run --rm --user "$(id -u):$(id -g)" --volume "$PWD:/repo:ro" --workdir /repo "$ACTIONLINT_IMAGE"
+      - name: Scan Git history with redacted output
+        run: docker run --rm --user "$(id -u):$(id -g)" --volume "$PWD:/repo:ro" --workdir /repo "$GITLEAKS_IMAGE" git --redact --no-banner --verbose /repo
+
+  python-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Test Python deployment tooling
+        run: |
+          python -m py_compile deploy.py
+          python -m unittest discover -s tests -p 'test_*.py'
+
   portal-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: camera-portal
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: camera-portal/go.mod
           cache-dependency-path: camera-portal/go.sum
+      - name: Check Go formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            printf 'Run gofmt on:\n%s\n' "$unformatted"
+            exit 1
+          fi
+      - run: go mod verify
+      - run: go vet ./...
       - run: go test ./...
       - run: go test -race ./internal/portal
 
-  deployment-config:
-    runs-on: ubuntu-latest
+  web-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: camera-portal
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.19.0
+          cache: npm
+          cache-dependency-path: camera-portal/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
+
+  deployment-config:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Check shell syntax
         run: |
           bash -n install.sh
           bash -n camera-portal-lan/scripts/verify.sh
           bash -n frigate-1panel/find-camera-ip.sh
           bash -n frigate-1panel/verify.sh
+      - name: Run ShellCheck
+        run: |
+          # SC1007: the two `CDPATH= cd` assignments intentionally use POSIX empty-value syntax.
+          docker run --rm --volume "$PWD:/mnt:ro" --workdir /mnt "$SHELLCHECK_IMAGE" shellcheck --exclude=SC1007 \
+            install.sh \
+            camera-portal-lan/scripts/verify.sh \
+            frigate-1panel/find-camera-ip.sh \
+            frigate-1panel/verify.sh
       - name: Test automated installer
         run: |
           python3 -m py_compile deploy.py
@@ -52,3 +137,46 @@ jobs:
           docker compose --project-directory camera-portal config --quiet
           docker compose --project-directory camera-portal-lan config --quiet
           docker compose --project-directory examples/cloudflare config --quiet
+
+  container-builds:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build Portal and LAN Caddy images
+        run: |
+          docker build --pull --tag local/camera-portal:ci camera-portal
+          docker build --pull --tag local/camera-portal-lan-caddy:ci camera-portal-lan/caddy
+      - name: Export images for scanning
+        run: |
+          docker save --output "$RUNNER_TEMP/camera-portal.tar" local/camera-portal:ci
+          docker save --output "$RUNNER_TEMP/camera-portal-lan-caddy.tar" local/camera-portal-lan-caddy:ci
+      - name: Block high and critical image vulnerabilities
+        run: |
+          mkdir -p "$RUNNER_TEMP/trivy-cache"
+          for archive in camera-portal.tar camera-portal-lan-caddy.tar; do
+            docker run --rm \
+              --volume "$RUNNER_TEMP:/scan:ro" \
+              --volume "$RUNNER_TEMP/trivy-cache:/root/.cache/trivy" \
+              "$TRIVY_IMAGE" image \
+              --input "/scan/$archive" \
+              --cache-dir /root/.cache/trivy \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --exit-code 1 \
+              --no-progress
+          done
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high

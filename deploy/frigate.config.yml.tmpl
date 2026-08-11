@@ -1,0 +1,55 @@
+mqtt:
+  enabled: false
+
+tls:
+  enabled: true
+
+auth:
+  enabled: true
+  failed_login_rate_limit: "1/second;5/minute;20/hour"
+  session_length: 604800
+
+ffmpeg:
+  path: "7.0"
+@@HWACCEL@@
+  retry_interval: 10
+
+go2rtc:
+  streams:
+@@GO2RTC_STREAMS@@
+
+birdseye:
+  enabled: false
+
+detect:
+  enabled: false
+  width: 640
+  height: 360
+  fps: 1
+
+motion:
+  enabled: false
+
+audio:
+  enabled: false
+
+record:
+  enabled: true
+  continuous:
+    days: @@RETENTION_DAYS@@
+  motion:
+    days: 0
+  alerts:
+    retain:
+      days: 0
+  detections:
+    retain:
+      days: 0
+
+snapshots:
+  enabled: false
+
+cameras:
+@@CAMERAS@@
+
+version: 0.17-0

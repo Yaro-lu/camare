@@ -4,3 +4,6 @@
 *.bak-*
 data
 README.md
+node_modules
+__pycache__
+*.pyc

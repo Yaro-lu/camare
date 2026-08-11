@@ -32,11 +32,49 @@ body.viewer {
   padding: max(14px, env(safe-area-inset-top)) 16px max(14px, env(safe-area-inset-bottom));
 }
 
+.viewer-shell.has-camera-groups {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
 .viewer-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
   min-height: 32px;
+}
+
+.camera-group-tabs {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.camera-group-tabs::-webkit-scrollbar { display: none; }
+
+.camera-group-tabs button {
+  flex: 0 0 auto;
+  min-width: 84px;
+  min-height: 32px;
+  padding: 6px 18px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .035);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.camera-group-tabs button[aria-pressed="true"] {
+  border-color: rgba(183, 255, 85, .45);
+  background: rgba(183, 255, 85, .12);
+  color: var(--ink);
+}
+
+.camera-group-tabs button:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
 }
 
 .brand, .live-indicator, .camera-label {
@@ -540,6 +578,8 @@ body.binding {
 @media (orientation: landscape) and (max-height: 520px) {
   .viewer-head { display: none; }
   .viewer-shell { grid-template-rows: 1fr auto; }
+  .viewer-shell.has-camera-groups { grid-template-rows: auto 1fr auto; }
+  .camera-group-tabs button { min-height: 28px; padding-block: 3px; }
   .replay-controls { padding-right: 164px; }
   .mode-switch { position: fixed; z-index: 20; right: 12px; bottom: 10px; grid-template-columns: repeat(2, 68px); }
 }

@@ -1,5 +1,7 @@
 # Admin Camera Audio Controls Implementation Plan
 
+> Historical plan for the legacy multi-Compose deployment. It is not an installation guide. New instances use only `/opt/1panel/docker/compose/camare-<instance-id>`; see the [root README](../../README.md) and [Quickstart](../quickstart.md).
+
 **Status:** Completed and deployed on 2026-08-10. The current yard group records without audio; the two front-group slots remain reserved for future cameras.
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
@@ -152,8 +154,8 @@ Expected: 全部 PASS，Compose 配置有效，镜像构建成功。
 
 **Files:**
 - Server backup: `/home/lol/camera-portal-backups/<timestamp>/`
-- Server deploy: `/opt/1panel/docker/compose/camera-portal/`
-- Server Frigate config: `/opt/1panel/docker/compose/frigate/config/config.yml`（只经 Frigate API 写入固定预设）
+- Legacy server Portal working directory（历史参考，不用于新安装）
+- Legacy server Frigate config（历史参考；当时只经 Frigate API 写入固定预设）
 
 **Step 1: Verify deployment target**
 
