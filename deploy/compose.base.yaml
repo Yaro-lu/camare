@@ -26,6 +26,8 @@ services:
           size: 268435456
     ports:
       - "${FRIGATE_ADMIN_BIND_IP:?set FRIGATE_ADMIN_BIND_IP in .env}:${FRIGATE_ADMIN_PORT:?set FRIGATE_ADMIN_PORT in .env}:8971/tcp"
+    networks:
+      - media_backend
     secrets:
 @@FRIGATE_SERVICE_SECRETS@@
     logging:
@@ -84,6 +86,9 @@ services:
     depends_on:
       frigate:
         condition: service_started
+    networks:
+      - media_backend
+      - portal_ingress
     healthcheck:
       test: ["CMD", "/camera-portal", "-healthcheck", "http://127.0.0.1:8080/healthz"]
       interval: 30s
@@ -138,6 +143,8 @@ services:
     depends_on:
       camera-portal:
         condition: service_healthy
+    networks:
+      - portal_ingress
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--max-time", "5", "http://127.0.0.1:8080/healthz"]
       interval: 30s
@@ -154,3 +161,9 @@ services:
 
 secrets:
 @@TOP_LEVEL_SECRETS@@
+
+networks:
+  media_backend:
+    driver: bridge
+  portal_ingress:
+    driver: bridge

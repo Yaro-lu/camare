@@ -266,6 +266,8 @@ def render_runtime(
     secrets:
       - source: cloudflare_token
         target: TUNNEL_TOKEN
+    networks:
+      - portal_ingress
     depends_on:
       camera-portal:
         condition: service_healthy

@@ -186,6 +186,15 @@ path = /live/201
             self.assertNotIn("\n  cloudflared:\n", compose)
             self.assertNotIn("container_name:", compose)
             self.assertNotIn("external:", compose)
+            self.assertIn("  media_backend:\n    driver: bridge", compose)
+            self.assertIn("  portal_ingress:\n    driver: bridge", compose)
+            frigate_service, portal_service = compose.split("  camera-portal:", 1)
+            portal_service, lan_service = portal_service.split("  lan-caddy:", 1)
+            self.assertIn("      - media_backend", frigate_service)
+            self.assertNotIn("      - portal_ingress", frigate_service)
+            self.assertIn("      - media_backend", portal_service)
+            self.assertIn("      - portal_ingress", portal_service)
+            self.assertIn("      - portal_ingress", lan_service)
             self.assertNotIn("devices:", compose)
             self.assertNotIn("LIBVA_DRIVER_NAME", compose)
             self.assertNotIn("preset-vaapi", frigate)
@@ -277,6 +286,11 @@ path = /live/201
             environment = layout.env.read_text(encoding="utf-8")
             manifest = layout.manifest.read_text(encoding="utf-8")
             self.assertIn("\n  cloudflared:\n", compose)
+            cloudflared = compose.split("  cloudflared:", 1)[1].split(
+                "\nsecrets:", 1
+            )[0]
+            self.assertIn("      - portal_ingress", cloudflared)
+            self.assertNotIn("      - media_backend", cloudflared)
             self.assertIn("target: TUNNEL_TOKEN", compose)
             self.assertEqual(
                 (layout.secrets / "cloudflare-token").read_bytes(),
