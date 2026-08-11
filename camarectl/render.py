@@ -52,11 +52,13 @@ def _write(path: Path, content: str | bytes, mode: int) -> None:
 
 def _read_camera_password(path: Path, label: str) -> str:
     try:
-        password = path.read_text(encoding="utf-8")
+        password = path.read_text(encoding="utf-8").rstrip("\r\n")
     except (OSError, UnicodeError) as error:
         raise RenderError(f"cannot read {label}: {error}") from error
     if not password or any(character in password for character in "\x00\r\n"):
-        raise RenderError(f"{label} must be non-empty UTF-8 without line breaks")
+        raise RenderError(
+            f"{label} must contain one non-empty UTF-8 line"
+        )
     return password
 
 

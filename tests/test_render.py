@@ -293,6 +293,27 @@ path = /live/201
             self.assertNotEqual(first_image.group(1), second_image.group(1))
             self.assertNotIn(":latest", first_image.group(1) + second_image.group(1))
 
+    def test_camera_password_file_accepts_a_conventional_trailing_newline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self.write_lan_config(root)
+            (root / "input-secrets" / "yard-password").write_text(
+                "line-password\n", encoding="utf-8"
+            )
+            config = load_config(config_path)
+
+            layout = render_runtime(
+                config,
+                source_root=REPOSITORY_ROOT,
+                staging_parent=root / "staging",
+                lan_access_key="n" * 64,
+            )
+
+            self.assertEqual(
+                (layout.secrets / "camera-password-1").read_text(encoding="utf-8"),
+                "line-password",
+            )
+
     def test_intel_render_uses_only_the_configured_vaapi_device_and_driver(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
