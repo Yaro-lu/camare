@@ -1,0 +1,344 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: {}
+
+jobs:
+  checks:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/checks.yml
+
+  validate:
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release tag and repository notices
+        run: bash scripts/release-check.sh preflight "$GITHUB_REF_NAME" refs/remotes/origin/main
+
+  build-platform:
+    needs: validate
+    name: build ${{ matrix.key }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TRIVY_IMAGE: aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: portal
+            repository: ghcr.io/yaro-lu/camare-portal
+            context: ./camera-portal
+            platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - key: portal
+            repository: ghcr.io/yaro-lu/camare-portal
+            context: ./camera-portal
+            platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - key: lan-caddy
+            repository: ghcr.io/yaro-lu/camare-lan-caddy
+            context: ./camera-portal-lan/caddy
+            platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - key: lan-caddy
+            repository: ghcr.io/yaro-lu/camare-lan-caddy
+            context: ./camera-portal-lan/caddy
+            platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Build immutable SHA candidate
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ${{ matrix.context }}
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ matrix.repository }}:sha-${{ github.sha }}-${{ matrix.arch }}
+          pull: true
+          # GitHub attestations are published as OCI referrers after scanning.
+          # Disabling BuildKit attestations keeps the final index at two platforms.
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=release-${{ matrix.key }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.key }}-${{ matrix.arch }}
+      - name: Scan exact digest and create standalone SPDX
+        env:
+          IMAGE_REPOSITORY: ${{ matrix.repository }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          SBOM_NAME: ${{ matrix.key }}-${{ matrix.arch }}.spdx.json
+        run: |
+          case "$IMAGE_DIGEST" in
+            sha256:[0-9a-f][0-9a-f]*) ;;
+            *) printf 'invalid image digest\n' >&2; exit 1 ;;
+          esac
+          output_dir="$RUNNER_TEMP/release"
+          cache_dir="$RUNNER_TEMP/trivy-cache"
+          mkdir -p "$output_dir" "$cache_dir"
+          printf '%s\n' "$IMAGE_DIGEST" > "$output_dir/digest.txt"
+          printf '%s\n' "$IMAGE_REPOSITORY" > "$output_dir/image.txt"
+          printf '%s\n' '${{ matrix.platform }}' > "$output_dir/platform.txt"
+          docker run --rm \
+            --volume "$HOME/.docker:/root/.docker:ro" \
+            --volume "$cache_dir:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image \
+            --cache-dir /root/.cache/trivy \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --no-progress \
+            "$IMAGE_REPOSITORY@$IMAGE_DIGEST"
+          docker run --rm \
+            --volume "$HOME/.docker:/root/.docker:ro" \
+            --volume "$cache_dir:/root/.cache/trivy" \
+            --volume "$output_dir:/out" \
+            "$TRIVY_IMAGE" image \
+            --cache-dir /root/.cache/trivy \
+            --format spdx-json \
+            --output "/out/$SBOM_NAME" \
+            --no-progress \
+            "$IMAGE_REPOSITORY@$IMAGE_DIGEST"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ matrix.key }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: build-platform
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-portal-amd64
+          path: ${{ runner.temp }}/release-input/portal/amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-portal-arm64
+          path: ${{ runner.temp }}/release-input/portal/arm64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-lan-caddy-amd64
+          path: ${{ runner.temp }}/release-input/lan-caddy/amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-lan-caddy-arm64
+          path: ${{ runner.temp }}/release-input/lan-caddy/arm64
+      - name: Publish scanned multi-platform manifests
+        id: publish-images
+        run: |
+          input_root="$RUNNER_TEMP/release-input"
+          asset_dir="$RUNNER_TEMP/release-assets"
+          mkdir -p "$asset_dir"
+          : > "$asset_dir/image-digests.txt"
+
+          read_digest() {
+            local path="$1"
+            local value
+            [[ -f "$path" && ! -L "$path" ]] || { printf 'invalid digest artifact\n' >&2; exit 1; }
+            value="$(cat "$path")"
+            [[ "$value" =~ ^sha256:[0-9a-f]{64}$ ]] \
+              || { printf 'invalid digest artifact\n' >&2; exit 1; }
+            printf '%s' "$value"
+          }
+
+          publish_image() {
+            local key="$1"
+            local repository="$2"
+            local amd64_digest arm64_digest candidate manifest_digest
+            local semver_ref semver_digest
+            amd64_digest="$(read_digest "$input_root/$key/amd64/digest.txt")"
+            arm64_digest="$(read_digest "$input_root/$key/arm64/digest.txt")"
+            [[ "$(cat "$input_root/$key/amd64/image.txt")" == "$repository" ]]
+            [[ "$(cat "$input_root/$key/arm64/image.txt")" == "$repository" ]]
+            [[ "$(cat "$input_root/$key/amd64/platform.txt")" == "linux/amd64" ]]
+            [[ "$(cat "$input_root/$key/arm64/platform.txt")" == "linux/arm64" ]]
+
+            candidate="$repository:sha-$GITHUB_SHA"
+            docker buildx imagetools create \
+              --tag "$candidate" \
+              "$repository@$amd64_digest" \
+              "$repository@$arm64_digest"
+            bash scripts/release-check.sh manifest \
+              "$candidate" "$amd64_digest" "$arm64_digest"
+            manifest_digest="$(
+              docker buildx imagetools inspect "$candidate" \
+                | awk '$1 == "Digest:" { print $2; exit }'
+            )"
+            [[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+            semver_ref="$repository:$GITHUB_REF_NAME"
+            docker buildx imagetools create \
+              --tag "$semver_ref" \
+              "$repository@$manifest_digest"
+            bash scripts/release-check.sh manifest \
+              "$semver_ref" "$amd64_digest" "$arm64_digest"
+            semver_digest="$(
+              docker buildx imagetools inspect "$semver_ref" \
+                | awk '$1 == "Digest:" { print $2; exit }'
+            )"
+            [[ "$semver_digest" == "$manifest_digest" ]]
+
+            printf '%s %s\n' "$candidate" "$manifest_digest" \
+              >> "$asset_dir/image-digests.txt"
+            printf '%s %s\n' "$semver_ref" "$manifest_digest" \
+              >> "$asset_dir/image-digests.txt"
+            printf '%s@%s linux/amd64\n' "$repository" "$amd64_digest" \
+              >> "$asset_dir/image-digests.txt"
+            printf '%s@%s linux/arm64\n' "$repository" "$arm64_digest" \
+              >> "$asset_dir/image-digests.txt"
+
+            case "$key" in
+              portal)
+                printf 'portal_digest=%s\n' "$manifest_digest" >> "$GITHUB_OUTPUT"
+                printf 'portal_amd64_digest=%s\n' "$amd64_digest" >> "$GITHUB_OUTPUT"
+                printf 'portal_arm64_digest=%s\n' "$arm64_digest" >> "$GITHUB_OUTPUT"
+                ;;
+              lan-caddy)
+                printf 'lan_caddy_digest=%s\n' "$manifest_digest" >> "$GITHUB_OUTPUT"
+                printf 'lan_caddy_amd64_digest=%s\n' "$amd64_digest" >> "$GITHUB_OUTPUT"
+                printf 'lan_caddy_arm64_digest=%s\n' "$arm64_digest" >> "$GITHUB_OUTPUT"
+                ;;
+              *) printf 'unexpected image key\n' >&2; exit 1 ;;
+            esac
+          }
+
+          publish_image portal ghcr.io/yaro-lu/camare-portal
+          publish_image lan-caddy ghcr.io/yaro-lu/camare-lan-caddy
+          cp "$input_root/portal/amd64/portal-amd64.spdx.json" \
+            "$asset_dir/camare-portal-linux-amd64.spdx.json"
+          cp "$input_root/portal/arm64/portal-arm64.spdx.json" \
+            "$asset_dir/camare-portal-linux-arm64.spdx.json"
+          cp "$input_root/lan-caddy/amd64/lan-caddy-amd64.spdx.json" \
+            "$asset_dir/camare-lan-caddy-linux-amd64.spdx.json"
+          cp "$input_root/lan-caddy/arm64/lan-caddy-arm64.spdx.json" \
+            "$asset_dir/camare-lan-caddy-linux-arm64.spdx.json"
+          printf 'asset_dir=%s\n' "$asset_dir" >> "$GITHUB_OUTPUT"
+          printf '%s\n' \
+            'These images support amd64 and arm64; complete ARM deployment remains experimental.' \
+            >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' \
+            'Before first release, both GHCR packages must be set to Public; verify anonymous digest pulls.' \
+            >> "$GITHUB_STEP_SUMMARY"
+      - name: Attest Portal provenance
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-name: ghcr.io/yaro-lu/camare-portal
+          subject-digest: ${{ steps.publish-images.outputs.portal_digest }}
+          subject-version: ${{ github.ref_name }}
+          push-to-registry: true
+      - name: Attest Portal amd64 SBOM
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-name: ghcr.io/yaro-lu/camare-portal
+          subject-digest: ${{ steps.publish-images.outputs.portal_amd64_digest }}
+          subject-version: ${{ github.ref_name }}-linux-amd64
+          sbom-path: ${{ steps.publish-images.outputs.asset_dir }}/camare-portal-linux-amd64.spdx.json
+          push-to-registry: true
+      - name: Attest Portal arm64 SBOM
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-name: ghcr.io/yaro-lu/camare-portal
+          subject-digest: ${{ steps.publish-images.outputs.portal_arm64_digest }}
+          subject-version: ${{ github.ref_name }}-linux-arm64
+          sbom-path: ${{ steps.publish-images.outputs.asset_dir }}/camare-portal-linux-arm64.spdx.json
+          push-to-registry: true
+      - name: Attest LAN Caddy provenance
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-name: ghcr.io/yaro-lu/camare-lan-caddy
+          subject-digest: ${{ steps.publish-images.outputs.lan_caddy_digest }}
+          subject-version: ${{ github.ref_name }}
+          push-to-registry: true
+      - name: Attest LAN Caddy amd64 SBOM
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-name: ghcr.io/yaro-lu/camare-lan-caddy
+          subject-digest: ${{ steps.publish-images.outputs.lan_caddy_amd64_digest }}
+          subject-version: ${{ github.ref_name }}-linux-amd64
+          sbom-path: ${{ steps.publish-images.outputs.asset_dir }}/camare-lan-caddy-linux-amd64.spdx.json
+          push-to-registry: true
+      - name: Attest LAN Caddy arm64 SBOM
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-name: ghcr.io/yaro-lu/camare-lan-caddy
+          subject-digest: ${{ steps.publish-images.outputs.lan_caddy_arm64_digest }}
+          subject-version: ${{ github.ref_name }}-linux-arm64
+          sbom-path: ${{ steps.publish-images.outputs.asset_dir }}/camare-lan-caddy-linux-arm64.spdx.json
+          push-to-registry: true
+      - name: Create deterministic source archive and checksums
+        env:
+          ASSET_DIR: ${{ steps.publish-images.outputs.asset_dir }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          git archive \
+            --format=tar \
+            --prefix="camare-$version/" \
+            "refs/tags/$GITHUB_REF_NAME^{}" \
+            | gzip -n --best > "$ASSET_DIR/camare-$version.tar.gz"
+          (
+            cd "$ASSET_DIR"
+            export LC_ALL=C
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' \
+              | sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+          )
+          bash scripts/release-check.sh checksums "$GITHUB_REF_NAME" "$ASSET_DIR"
+      - name: Create verified GitHub Release
+        env:
+          ASSET_DIR: ${{ steps.publish-images.outputs.asset_dir }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes-from-tag \
+            "$ASSET_DIR"/*
