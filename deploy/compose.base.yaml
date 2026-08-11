@@ -105,8 +105,6 @@ services:
     build:
       context: "${CAMARE_SOURCE_ROOT:?set CAMARE_SOURCE_ROOT in .env}/camera-portal-lan/caddy"
       dockerfile: Dockerfile
-      args:
-        CADDY_VERSION: "2.11.4"
     image: "${LAN_CADDY_IMAGE:?set LAN_CADDY_IMAGE in .env}"
     restart: unless-stopped
     init: true
