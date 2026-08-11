@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 import time
 import uuid
@@ -71,11 +72,20 @@ class _Manifest:
 
 
 SAFE_INSTANCE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+RUNTIME_FORMAT_VERSION = 2
+MUTABLE_CONTROL_FILES = (PurePosixPath("frigate/config.yml"),)
 
 
 def _is_link(path: Path) -> bool:
     is_junction = getattr(path, "is_junction", None)
-    return path.is_symlink() or bool(is_junction and is_junction())
+    if path.is_symlink() or bool(is_junction and is_junction()):
+        return True
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    except OSError:
+        return False
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(reparse and attributes & reparse)
 
 
 def _digest(path: Path) -> str:
@@ -107,6 +117,8 @@ def _load_manifest(root: Path) -> _Manifest:
         raise ApplyError("runtime manifest is missing or invalid") from error
     if not isinstance(document, dict):
         raise ApplyError("runtime manifest must be an object")
+    if document.get("format_version") != RUNTIME_FORMAT_VERSION:
+        raise ApplyError("unsupported runtime manifest version")
     instance_id = document.get("instance_id")
     if not isinstance(instance_id, str) or not SAFE_INSTANCE_ID.fullmatch(instance_id):
         raise ApplyError("runtime manifest has an unsafe instance_id")
@@ -127,6 +139,7 @@ def _load_manifest(root: Path) -> _Manifest:
     raw_files = document.get("files")
     if not isinstance(raw_files, dict) or not raw_files:
         raise ApplyError("runtime manifest must contain non-secret file hashes")
+    immutable_files: set[PurePosixPath] = set()
     for raw_relative, expected in raw_files.items():
         relative = _relative_path(raw_relative, "manifest file")
         path = _local_path(root, relative)
@@ -138,6 +151,29 @@ def _load_manifest(root: Path) -> _Manifest:
             or _digest(path) != expected
         ):
             raise ApplyError(f"runtime file hash mismatch: {relative}")
+        immutable_files.add(relative)
+    expected_immutable = {
+        PurePosixPath(".env"),
+        PurePosixPath("caddy/Caddyfile"),
+        *compose_files,
+    }
+    if immutable_files != expected_immutable:
+        raise ApplyError("runtime manifest has unexpected immutable files")
+
+    raw_mutable = document.get("mutable_files")
+    if not isinstance(raw_mutable, list):
+        raise ApplyError("runtime manifest must list mutable_files")
+    mutable_files = tuple(
+        _relative_path(value, "mutable file") for value in raw_mutable
+    )
+    if mutable_files != MUTABLE_CONTROL_FILES:
+        raise ApplyError("runtime manifest has unexpected mutable files")
+    if immutable_files.intersection(mutable_files):
+        raise ApplyError("runtime manifest file cannot be both immutable and mutable")
+    for relative in mutable_files:
+        path = _local_path(root, relative)
+        if _is_link(path) or not path.is_file():
+            raise ApplyError(f"runtime mutable file is missing or unsafe: {relative}")
 
     raw_ownership = document.get("required_ownership", {})
     if not isinstance(raw_ownership, dict):
@@ -267,11 +303,20 @@ def _apply_ownership(
 @contextmanager
 def _instance_lock(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if _is_link(path):
-        raise ApplyError("instance lock is an unsafe symlink")
-    handle = path.open("a+b")
+    if _is_link(path) or (path.exists() and not path.is_file()):
+        raise ApplyError("instance lock path is unsafe")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as error:
+        raise ApplyError("instance lock path could not be opened safely") from error
+    handle = os.fdopen(descriptor, "r+b")
     locked = False
     try:
+        if _is_link(path):
+            raise ApplyError("instance lock path became unsafe")
+        if hasattr(os, "fchmod"):
+            os.fchmod(handle.fileno(), 0o600)
         if os.name == "nt":
             import msvcrt
 

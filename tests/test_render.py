@@ -237,9 +237,12 @@ path = /live/201
                 self.assertNotIn("a" * 64, rendered)
 
             manifest = json.loads(manifest_text)
+            self.assertEqual(manifest["format_version"], 2)
             self.assertEqual(manifest["instance_id"], "render-test")
             self.assertEqual(manifest["provider"], "lan")
             self.assertEqual(manifest["build_mode"], "local")
+            self.assertEqual(manifest["mutable_files"], ["frigate/config.yml"])
+            self.assertNotIn("frigate/config.yml", manifest["files"])
             self.assertEqual(
                 manifest["required_ownership"]["portal-data"],
                 {"uid": 65532, "gid": 65532, "mode": "0750"},
@@ -633,7 +636,7 @@ path = /live/201
             config = load_config(config_path)
             staging = root / "staging"
 
-            with self.assertRaisesRegex(RenderError, "without line breaks"):
+            with self.assertRaisesRegex(RenderError, "one non-empty UTF-8 line"):
                 render_runtime(
                     config,
                     source_root=REPOSITORY_ROOT,

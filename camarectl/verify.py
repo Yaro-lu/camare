@@ -171,7 +171,7 @@ def _manifest_compose_files(
     manifest = json.loads(manifest_text)
     if not isinstance(manifest, dict):
         raise ValueError("manifest must be an object")
-    if manifest.get("format_version") != 1:
+    if manifest.get("format_version") != 2:
         raise ValueError("unsupported manifest version")
     if manifest.get("instance_id") != config.instance_id:
         raise ValueError("manifest instance mismatch")
@@ -186,13 +186,14 @@ def _manifest_compose_files(
     expected_files = {
         ".env",
         "compose.yaml",
-        "frigate/config.yml",
         "caddy/Caddyfile",
     }
     if config.hardware.mode == "intel-vaapi":
         expected_files.add("compose.intel.yaml")
     if set(file_digests) != expected_files:
         raise ValueError("manifest file inventory is incomplete or unexpected")
+    if manifest.get("mutable_files") != ["frigate/config.yml"]:
+        raise ValueError("manifest mutable file inventory is incomplete or unexpected")
 
     verified_files: dict[str, Path] = {}
     verified_paths: set[Path] = set()
@@ -221,6 +222,10 @@ def _manifest_compose_files(
         if actual_digest != expected_digest:
             raise ValueError("manifest file is missing, unsafe, or modified")
         verified_files[value] = verified_file
+
+    mutable_config = runtime_root / "frigate" / "config.yml"
+    if paths.sha256_regular_file(mutable_config, COMPOSE_MAX_BYTES) is None:
+        raise ValueError("manifest mutable file is missing or unsafe")
 
     expected_compose_files = ["compose.yaml"]
     if config.hardware.mode == "intel-vaapi":

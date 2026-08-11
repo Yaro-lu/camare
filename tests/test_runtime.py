@@ -54,11 +54,10 @@ def make_staging(
         layout.env,
         layout.base_compose,
         *(() if layout.intel_compose is None else (layout.intel_compose,)),
-        layout.frigate_config,
         layout.caddyfile,
     ]
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
         "instance_id": instance_id,
         "provider": "lan",
         "hardware": "intel-vaapi" if intel else "cpu",
@@ -71,6 +70,7 @@ def make_staging(
             path.relative_to(layout.root).as_posix(): digest(path)
             for path in non_secret
         },
+        "mutable_files": ["frigate/config.yml"],
         "required_ownership": {
             "portal-data": {"uid": 65532, "gid": 65532, "mode": "0750"}
         },
@@ -287,6 +287,44 @@ class RuntimeApplyTests(unittest.TestCase):
                     for relative in controls_before
                 },
                 controls_before,
+            )
+
+    def test_admin_audio_override_is_backed_up_then_declarative_apply_wins(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "runtime"
+            runner = RecordingRunner()
+            apply_staging(
+                make_staging(root / "staging", "declared"),
+                target,
+                runner,
+                ownership=lambda *_: None,
+            )
+            runtime_override = "version: runtime-audio-enabled\n"
+            (target / "frigate/config.yml").write_text(
+                runtime_override,
+                encoding="utf-8",
+            )
+
+            result = apply_staging(
+                make_staging(root / "staging", "declared"),
+                target,
+                runner,
+                ownership=lambda *_: None,
+            )
+
+            self.assertTrue(result.changed)
+            self.assertEqual(
+                (target / "frigate/config.yml").read_text(encoding="utf-8"),
+                "version: declared\n",
+            )
+            self.assertIsNotNone(result.backup_root)
+            assert result.backup_root is not None
+            self.assertEqual(
+                (result.backup_root / "frigate/config.yml").read_text(
+                    encoding="utf-8"
+                ),
+                runtime_override,
             )
 
     def test_backups_rotate_to_three_and_removed_intel_override_is_preserved_in_backup(self) -> None:
@@ -572,6 +610,26 @@ class RuntimeApplyTests(unittest.TestCase):
             self.assertEqual(first_errors, [])
             self.assertTrue(target.is_dir())
             self.assertTrue(second.root.is_dir())
+
+    def test_instance_lock_rejects_a_precreated_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "runtime"
+            lock = root / ".runtime.apply.lock"
+            lock.mkdir()
+            staging = make_staging(root / "staging", "v1")
+
+            with self.assertRaisesRegex(ApplyError, "lock path is unsafe"):
+                apply_staging(
+                    staging,
+                    target,
+                    RecordingRunner(),
+                    ownership=lambda *_: None,
+                )
+
+            self.assertTrue(lock.is_dir())
+            self.assertTrue(staging.root.is_dir())
+            self.assertFalse(target.exists())
 
     def test_backup_rotation_rejects_non_directory_or_symlinked_backup_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -135,16 +135,16 @@ class FakePathProbe:
         frigate_digest = "d" * 64
         caddy_digest = "e" * 64
         self.manifest: object = {
-            "format_version": 1,
+            "format_version": 2,
             "instance_id": "verify-test",
             "provider": "cloudflare",
             "compose_files": ["compose.yaml"],
             "files": {
                 ".env": env_digest,
                 "compose.yaml": compose_digest,
-                "frigate/config.yml": frigate_digest,
                 "caddy/Caddyfile": caddy_digest,
             },
+            "mutable_files": ["frigate/config.yml"],
         }
         self.read_paths: list[Path] = []
         self.digest_paths: list[Path] = []
@@ -431,7 +431,7 @@ class VerifyRuntimeTests(unittest.TestCase):
         self.assertEqual(mismatched_results[0].level, "FAIL")
         self.assertEqual(self.runner.commands, [])
 
-    def test_tampered_env_or_frigate_config_fails_before_compose_queries(self) -> None:
+    def test_tampered_env_or_missing_mutable_frigate_config_fails_before_compose(self) -> None:
         self.paths.file_digests[self.root / ".env"] = "f" * 64
 
         env_results = self.verify()
@@ -447,6 +447,16 @@ class VerifyRuntimeTests(unittest.TestCase):
         self.assertEqual(frigate_results[0].code, "runtime.manifest")
         self.assertEqual(frigate_results[0].level, "FAIL")
         self.assertEqual(self.runner.commands, [])
+
+    def test_changed_mutable_frigate_config_is_accepted(self) -> None:
+        self.paths.file_digests[self.root / "frigate/config.yml"] = "f" * 64
+
+        results = self.verify()
+
+        self.assertFalse(
+            any(result.code == "runtime.manifest" and result.level == "FAIL" for result in results)
+        )
+        self.assertTrue(self.runner.commands)
 
     def test_local_http_probe_explicitly_disables_environment_proxies(self) -> None:
         class FakeResponse:

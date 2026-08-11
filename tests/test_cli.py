@@ -8,6 +8,7 @@ from unittest import mock
 
 from camarectl.checks import CheckResult
 from camarectl.layout import create_staging_layout
+from camarectl.lifecycle import BackupResult, RestoreResult, UninstallResult
 from camarectl.model import (
     AdminConfig,
     DeploymentConfig,
@@ -275,6 +276,169 @@ class CLITests(unittest.TestCase):
         self.assertEqual(json.loads(verify_output)[1]["level"], "FAIL")
         self.assertEqual(json.loads(status_output)["level"], "FAIL")
         self.assertNotIn("camera.password", verify_output + status_output)
+
+    def test_backup_reports_sensitive_state_and_excluded_media_secret_files(self) -> None:
+        config = deployment_config(PurePosixPath("/opt/camare/cli-test"))
+        result = BackupResult(
+            backup_root=Path("/safe/backups/cli-test"),
+            instance_id="cli-test",
+            entries=(PurePosixPath("payload/portal/state.json"),),
+        )
+        with (
+            mock.patch("camarectl.commands.load_config", return_value=config),
+            mock.patch("camarectl.commands.backup_instance", return_value=result) as backup,
+        ):
+            code, output = capture_main(
+                [
+                    "backup",
+                    "--config",
+                    "ignored.ini",
+                    "--output",
+                    "/safe/backups/cli-test",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        payload = json.loads(output)
+        self.assertTrue(payload["contains_sensitive_state"])
+        self.assertFalse(payload["docker_secret_files_included"])
+        self.assertFalse(payload["recordings_included"])
+        backup.assert_called_once_with(
+            Path("/opt/camare/cli-test"),
+            Path("/safe/backups/cli-test").absolute().resolve(),
+        )
+
+    def test_backup_refuses_to_write_inside_the_recording_media_tree(self) -> None:
+        config = deployment_config(PurePosixPath("/opt/camare/cli-test"))
+        with (
+            mock.patch("camarectl.commands.load_config", return_value=config),
+            mock.patch("camarectl.commands.backup_instance") as backup,
+        ):
+            code, output = capture_main(
+                [
+                    "backup",
+                    "--config",
+                    "ignored.ini",
+                    "--output",
+                    "/srv/camare/media/backups/unsafe",
+                ]
+            )
+
+        self.assertEqual(code, 2)
+        self.assertIn("outside the recording media", output)
+        backup.assert_not_called()
+
+    def test_restore_is_dry_run_by_default_and_apply_uses_verification(self) -> None:
+        config = deployment_config(PurePosixPath("/opt/camare/cli-test"))
+        dry_run = RestoreResult(
+            backup_root=Path("/safe/backup"),
+            target_root=Path("/opt/camare/cli-test"),
+            instance_id="cli-test",
+            applied=False,
+            paths=(PurePosixPath("portal-data/state.json"),),
+            verified=False,
+        )
+        applied = RestoreResult(
+            backup_root=dry_run.backup_root,
+            target_root=dry_run.target_root,
+            instance_id="cli-test",
+            applied=True,
+            paths=dry_run.paths,
+            verified=True,
+        )
+        with (
+            mock.patch("camarectl.commands.load_config", return_value=config),
+            mock.patch(
+                "camarectl.commands.restore_instance",
+                side_effect=(dry_run, applied),
+            ) as restore,
+            mock.patch(
+                "camarectl.commands.verify_runtime",
+                return_value=(VerificationResult("PASS", "recording", "advanced"),),
+            ),
+        ):
+            dry_code, dry_output = capture_main(
+                [
+                    "restore",
+                    "--config",
+                    "ignored.ini",
+                    "--archive",
+                    "/safe/backup",
+                    "--json",
+                ]
+            )
+            apply_code, apply_output = capture_main(
+                [
+                    "restore",
+                    "--config",
+                    "ignored.ini",
+                    "--archive",
+                    "/safe/backup",
+                    "--apply",
+                    "--yes",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(dry_code, 0)
+        self.assertFalse(json.loads(dry_output)["applied"])
+        self.assertEqual(apply_code, 0)
+        self.assertTrue(json.loads(apply_output)["verified"])
+        self.assertFalse(restore.call_args_list[0].kwargs["apply"])
+        self.assertIsNone(restore.call_args_list[0].kwargs["runner"])
+        self.assertTrue(restore.call_args_list[1].kwargs["apply"])
+        self.assertIsNotNone(restore.call_args_list[1].kwargs["runner"])
+        self.assertIsNotNone(restore.call_args_list[1].kwargs["verifier"])
+
+    def test_uninstall_purge_requires_exact_instance_confirmation(self) -> None:
+        config = deployment_config(PurePosixPath("/opt/camare/cli-test"))
+        result = UninstallResult(
+            target_root=Path("/opt/camare/cli-test"),
+            instance_id="cli-test",
+            project_name="camare_cli-test",
+            applied=True,
+            purge_data=True,
+            control_paths=(PurePosixPath("compose.yaml"),),
+            data_paths=(PurePosixPath("frigate/frigate.db"),),
+        )
+        with (
+            mock.patch("camarectl.commands.load_config", return_value=config),
+            mock.patch("camarectl.commands.uninstall_instance", return_value=result) as uninstall,
+        ):
+            rejected_code, rejected_output = capture_main(
+                [
+                    "uninstall",
+                    "--config",
+                    "ignored.ini",
+                    "--apply",
+                    "--yes",
+                    "--purge-data",
+                ]
+            )
+            accepted_code, accepted_output = capture_main(
+                [
+                    "uninstall",
+                    "--config",
+                    "ignored.ini",
+                    "--apply",
+                    "--yes",
+                    "--purge-data",
+                    "--confirm-instance",
+                    "cli-test",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(rejected_code, 2)
+        self.assertIn("--confirm-instance cli-test", rejected_output)
+        self.assertEqual(accepted_code, 0)
+        payload = json.loads(accepted_output)
+        self.assertTrue(payload["purge_data"])
+        self.assertFalse(payload["recordings_removed"])
+        uninstall.assert_called_once()
+        self.assertTrue(uninstall.call_args.kwargs["apply"])
+        self.assertTrue(uninstall.call_args.kwargs["purge_data"])
 
     def test_install_script_uses_new_cli_and_keeps_legacy_explicit(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "install.sh").read_text(

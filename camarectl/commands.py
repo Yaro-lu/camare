@@ -14,6 +14,15 @@ from typing import Sequence
 
 from .checks import CheckResult, run_doctor
 from .config import ConfigError, load_config
+from .lifecycle import (
+    BackupResult,
+    LifecycleError,
+    RestoreResult,
+    UninstallResult,
+    backup_instance,
+    restore_instance,
+    uninstall_instance,
+)
 from .model import DeploymentConfig
 from .render import RenderError, render_runtime
 from .runtime import (
@@ -114,6 +123,44 @@ def _build_parser() -> argparse.ArgumentParser:
         default=900.0,
         help="bounded Compose build/start timeout in seconds (default: 900)",
     )
+
+    backup = subparsers.add_parser(
+        "backup",
+        help="create a private state backup without recordings or Docker secret files",
+    )
+    _add_common_options(backup)
+    backup.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="new backup directory; it must not already exist",
+    )
+
+    restore = subparsers.add_parser(
+        "restore", help="validate a backup or restore it with rollback protection"
+    )
+    _add_common_options(restore)
+    restore.add_argument("--archive", type=Path, required=True)
+    restore.add_argument("--apply", action="store_true")
+    restore.add_argument("--yes", action="store_true")
+    restore.add_argument("--timeout", type=float, default=300.0)
+
+    uninstall = subparsers.add_parser(
+        "uninstall", help="plan or remove only one Camare instance"
+    )
+    _add_common_options(uninstall)
+    uninstall.add_argument("--apply", action="store_true")
+    uninstall.add_argument("--yes", action="store_true")
+    uninstall.add_argument(
+        "--purge-data",
+        action="store_true",
+        help="also remove Portal state and Frigate databases; never removes media",
+    )
+    uninstall.add_argument(
+        "--confirm-instance",
+        help="exact instance id required with --apply --purge-data",
+    )
+    uninstall.add_argument("--timeout", type=float, default=300.0)
     return parser
 
 
@@ -182,7 +229,7 @@ def _safe_existing_runtime(config: DeploymentConfig, target: Path) -> bool:
         return False
     return (
         isinstance(document, dict)
-        and document.get("format_version") == 1
+        and document.get("format_version") == 2
         and document.get("instance_id") == config.instance_id
     )
 
@@ -289,6 +336,16 @@ def _confirmation_approved(assume_yes: bool) -> bool:
     return input("Type APPLY to continue: ").strip() == "APPLY"
 
 
+def _destructive_confirmation(assume_yes: bool, action: str) -> None:
+    if assume_yes:
+        return
+    if not sys.stdin.isatty():
+        raise CLIError(f"{action} requires --yes when standard input is non-interactive")
+    print(f"This will {action} only the configured Camare instance.")
+    if input("Type APPLY to continue: ").strip() != "APPLY":
+        raise CLIError(f"{action} was not confirmed")
+
+
 def _apply(
     config: DeploymentConfig,
     *,
@@ -390,6 +447,146 @@ def _verify(config: DeploymentConfig, as_json: bool, *, concise: bool) -> int:
     return 1 if failed else 0
 
 
+def _backup(config: DeploymentConfig, output: Path, as_json: bool) -> int:
+    destination = output.expanduser().absolute().resolve()
+    media = Path(str(config.media)).expanduser().absolute().resolve()
+    if destination == media or media in destination.parents:
+        raise CLIError("backup output must be outside the recording media directory")
+    result: BackupResult = backup_instance(
+        Path(str(config.runtime_dir)),
+        destination,
+    )
+    payload = {
+        "backup_root": str(result.backup_root),
+        "contains_sensitive_state": True,
+        "docker_secret_files_included": False,
+        "entries": len(result.entries),
+        "instance_id": result.instance_id,
+        "recordings_included": False,
+    }
+    if as_json:
+        _json_dump(payload)
+    else:
+        print(
+            f"Backup created: {result.backup_root} ({len(result.entries)} entries)."
+        )
+        print("Recordings and Docker secret files were not copied.")
+        print("The backup still contains sensitive device state and databases; protect it.")
+    return 0
+
+
+def _restore(
+    config: DeploymentConfig,
+    archive: Path,
+    *,
+    apply: bool,
+    assume_yes: bool,
+    timeout: float,
+    as_json: bool,
+) -> int:
+    if not 1 <= timeout <= 3600:
+        raise CLIError("--timeout must be between 1 and 3600 seconds")
+    if apply:
+        _destructive_confirmation(assume_yes, "restore")
+    runner = RuntimeCommandRunner() if apply else None
+
+    def verifier(runtime_root: Path) -> bool:
+        return not _has_failure(verify_runtime(config, runtime_root))
+
+    result: RestoreResult = restore_instance(
+        archive,
+        Path(str(config.runtime_dir)),
+        runner=runner,
+        apply=apply,
+        command_timeout=timeout,
+        verifier=verifier if apply else None,
+    )
+    payload = {
+        "applied": result.applied,
+        "backup_root": str(result.backup_root),
+        "instance_id": result.instance_id,
+        "paths": len(result.paths),
+        "verified": result.verified,
+    }
+    if as_json:
+        _json_dump(payload)
+    elif result.applied:
+        print(
+            f"Backup restored and verified: instance={result.instance_id}; "
+            f"paths={len(result.paths)}"
+        )
+    else:
+        print(
+            f"Restore dry-run valid: instance={result.instance_id}; "
+            f"paths={len(result.paths)}"
+        )
+        print("Nothing was changed. Add --apply --yes to execute the restore.")
+    return 0
+
+
+def _uninstall(
+    config: DeploymentConfig,
+    *,
+    apply: bool,
+    assume_yes: bool,
+    purge_data: bool,
+    confirm_instance: str | None,
+    timeout: float,
+    as_json: bool,
+) -> int:
+    if not 1 <= timeout <= 3600:
+        raise CLIError("--timeout must be between 1 and 3600 seconds")
+    if apply:
+        if purge_data and confirm_instance != config.instance_id:
+            raise CLIError(
+                "--apply --purge-data requires --confirm-instance "
+                f"{config.instance_id}"
+            )
+        _destructive_confirmation(assume_yes, "uninstall")
+    result: UninstallResult = uninstall_instance(
+        Path(str(config.runtime_dir)),
+        runner=RuntimeCommandRunner() if apply else None,
+        apply=apply,
+        purge_data=purge_data,
+        command_timeout=timeout,
+    )
+    payload = {
+        "applied": result.applied,
+        "controls": len(result.control_paths),
+        "persistent_data": len(result.data_paths),
+        "instance_id": result.instance_id,
+        "project_name": result.project_name,
+        "purge_data": result.purge_data,
+        "recordings_removed": False,
+    }
+    if as_json:
+        _json_dump(payload)
+    elif result.applied:
+        if result.purge_data:
+            print(
+                f"Instance purged: project={result.project_name}; "
+                "managed files=removed; recordings=preserved"
+            )
+        else:
+            print(
+                f"Instance stopped and containers removed: project={result.project_name}; "
+                "instance files=preserved; recordings=preserved"
+            )
+    else:
+        if result.purge_data:
+            print(
+                f"Purge dry-run: controls={len(result.control_paths)}; "
+                "managed state=remove; recordings=preserve"
+            )
+        else:
+            print(
+                f"Uninstall dry-run: project={result.project_name}; "
+                "instance files=preserve; recordings=preserve"
+            )
+        print("Nothing was changed. Add --apply --yes to execute the uninstall.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     arguments = parser.parse_args(list(argv) if argv is not None else None)
@@ -418,8 +615,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _verify(config, as_json, concise=False)
         if arguments.command == "status":
             return _verify(config, as_json, concise=True)
+        if arguments.command == "backup":
+            return _backup(config, arguments.output, as_json)
+        if arguments.command == "restore":
+            return _restore(
+                config,
+                arguments.archive,
+                apply=arguments.apply,
+                assume_yes=arguments.yes,
+                timeout=arguments.timeout,
+                as_json=as_json,
+            )
+        if arguments.command == "uninstall":
+            return _uninstall(
+                config,
+                apply=arguments.apply,
+                assume_yes=arguments.yes,
+                purge_data=arguments.purge_data,
+                confirm_instance=arguments.confirm_instance,
+                timeout=arguments.timeout,
+                as_json=as_json,
+            )
         raise CLIError(f"unknown command: {arguments.command}")
-    except (ConfigError, RenderError, ApplyError, CLIError, OSError, ValueError) as error:
+    except (
+        ConfigError,
+        RenderError,
+        ApplyError,
+        LifecycleError,
+        CLIError,
+        OSError,
+        ValueError,
+    ) as error:
         if as_json:
             _json_dump({"error": str(error)})
         else:

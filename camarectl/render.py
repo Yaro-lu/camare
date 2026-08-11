@@ -414,11 +414,10 @@ def render_runtime(
             layout.env,
             layout.base_compose,
             *(() if layout.intel_compose is None else (layout.intel_compose,)),
-            layout.frigate_config,
             layout.caddyfile,
         ]
         manifest = {
-            "format_version": 1,
+            "format_version": 2,
             "instance_id": config.instance_id,
             "provider": config.provider,
             "hardware": config.hardware.mode,
@@ -431,6 +430,11 @@ def render_runtime(
                 path.relative_to(layout.root).as_posix(): _digest(path)
                 for path in sorted(non_secret_paths)
             },
+            # The Tailscale-only admin page intentionally changes group audio
+            # presets in this file through Frigate's config API.  It remains a
+            # managed, backed-up regular file, but its initial digest cannot be
+            # treated as immutable after deployment.
+            "mutable_files": ["frigate/config.yml"],
             "required_ownership": {
                 "portal-data": {
                     "uid": 65532,
