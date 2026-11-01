@@ -12,7 +12,7 @@
     "test": "node --test web/tests/*.test.mjs"
   },
   "dependencies": {
-    "@cycjimmy/jsmpeg-player": "6.1.2",
-    "hls.js": "1.6.16"
+    "@cycjimmy/jsmpeg-player": "6.1.6",
+    "hls.js": "1.7.4"
   }
 }
